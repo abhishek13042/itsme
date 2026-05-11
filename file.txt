@@ -1,0 +1,772 @@
+everything once on app start, store it in Zustand, and every page just reads from the store
+instantly with no waiting.
+
+Looking at your App.jsx, you already do this partially — you load settings,
+playerState, wallet, and quests on mount. The problem is the other stores (health, sde,
+exams, trading, finance, character) are loading lazily when each page opens.
+
+Before I write the prompt, share these files so I know the exact action names to call:
+
+1. src/store/healthStore.js
+2. src/store/sdeStore.js
+3. src/store/examStore.js
+4. src/store/tradingStore.js
+5. src/store/characterStore.js
+6. src/store/financeStore.js
+
+Just paste them all and I'll write one single prompt that adds all of them to the initApp
+parallel fetch in App.jsx so everything loads in one shot on startup.
+
+--- src/store/healthStore.js ---
+import { create } from 'zustand';
+import { supabase } from '../lib/supabase';
+import { awardXP } from '../lib/xpEngine';
+import { rewards } from '../lib/rewards';
+
+export const useHealthStore = create((set, get) => ({
+  todayLog: null,
+  history: [],
+  milestones: [],
+  loading: false,
+  lastLoaded: null,
+
+  loadHealthData: async (force = false) => {
+    if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
+    set({ loading: true });
+    try {
+      const today = new Date().toISOString().split('T')[0];
+
+      const { data: log } = await supabase.from('health_logs').select('*').eq('log_date', today).maybeSingle();
+      const { data: history } = await supabase.from('health_logs').select('*').order('log_date', { ascending: false }).limit(60);
+      const { data: milestones } = await supabase.from('health_milestones').select('*').order('phase');
+
+      set({ 
+        todayLog: log || { 
+          log_date: today, 
+          total_checks: 0, 
+          total_possible: 13,
+          gym_done: false,
+          bath_done: false,
+          bed_made: false,
+          teeth_brushed: false,
+          skincare_am: false,
+          skincare_pm: false,
+          study_table_organised: false,
+          meal_1_done: false,
+          meal_2_done: false,
+          protein_hit: false,
+          no_junk_before_6pm: false,
+          slept_by_midnight: false,
+          woke_by_630: false
+        }, 
+        history: history || [],
+        milestones: milestones || [],
+        loading: false,
+        lastLoaded: Date.now()
+      });
+    } catch (err) {
+      console.error('Failed to load health data:', err);
+      set({ loading: false });
+    }
+  },
+
+  updateLog: async (updates) => {
+    const { todayLog } = get();
+    // Calculate new stats if fields are toggled
+    const newLog = { ...todayLog, ...updates };
+    
+    // Count active checks (excluding metadata fields)
+    const checkFields = [
+      'gym_done', 'meal_1_done', 'meal_2_done', 'protein_hit', 'no_junk_before_6pm',
+      'slept_by_midnight', 'woke_by_630', 'bath_done', 'bed_made', 'teeth_brushed',
+      'skincare_am', 'skincare_pm', 'study_table_organised'
+    ];
+    
+    newLog.total_checks = checkFields.filter(f => newLog[f]).length;
+    newLog.day_score = Math.floor((newLog.total_checks / newLog.total_possible) * 100);
+    
+    // Simple reward calculation (₹1-₹6 per habit based on user spec)
+    // We'll calculate the difference in earnings
+    const prevScore = todayLog.total_checks;
+    const newScore = newLog.total_checks;
+    
+    try {
+      const { data, error } = await supabase
+        .from('health_logs')
+        .upsert(newLog)
+        .select()
+        .single();
+      
+      if (!error) {
+        set({ todayLog: data });
+      }
+    } catch (err) {
+      console.error('Failed to update health log:', err);
+    }
+  },
+
+  toggleMilestone: async (id, completed) => {
+    try {
+      await supabase.from('health_milestones').update({ completed }).eq('id', id);
+      set(state => ({
+        milestones: state.milestones.map(m => m.id === id ? { ...m, completed } : m)
+      }));
+    } catch (err) {
+      console.error('Failed to toggle milestone:', err);
+    }
+  },
+
+  submitDay: async () => {
+    const { todayLog } = get();
+    if (!todayLog) return;
+    
+    try {
+       // Finalize earnings based on score and save
+       const earnings = todayLog.total_checks * 4; // Average ₹4 per habit
+       await supabase.from('health_logs').update({ rupees_earned: earnings }).eq('id', todayLog.id);
+       
+       // Global rewards
+       await awardXP(todayLog.total_checks * 10, 'daily_health_habits');
+       await rewards.earnReward(earnings * 100, 'Health Protocol Check', 'health');
+       
+       if (todayLog.day_score === 100) {
+         await awardXP(100, 'perfect_health_day');
+         await rewards.earnReward(5000, 'Perfect Health Bonus', 'health_bonus');
+       }
+       
+       return { success: true, score: todayLog.day_score, earnings };
+    } catch (err) {
+       console.error('Failed to submit day:', err);
+       return { success: false };
+    }
+  }
+}));
+
+--- src/store/sdeStore.js ---
+import { create } from 'zustand';
+import { supabase } from '../lib/supabase';
+import { awardXP } from '../lib/xpEngine';
+import { seedSdeRoadmap } from '../lib/sdeSeeder';
+
+export const useSdeStore = create((set, get) => ({
+  chapters: [],
+  dsaSolved: 0,
+  loading: false,
+
+  loadRoadmap: async () => {
+    set({ loading: true });
+    try {
+      await seedSdeRoadmap(); // Ensure table is seeded
+      
+      const { data: chapters, error } = await supabase
+        .from('sde_progress')
+        .select('*')
+        .order('month_target', { ascending: true });
+
+      if (error) throw error;
+
+      const { data: player } = await supabase
+        .from('player_state')
+        .select('stat_dsa_solved')
+        .single();
+
+      set({ 
+        chapters: chapters || [], 
+        dsaSolved: player?.stat_dsa_solved || 0,
+        loading: false 
+      });
+    } catch (err) {
+      console.error('Failed to load SDE roadmap:', err);
+      set({ loading: false });
+    }
+  },
+
+  updateChapterStatus: async (chapterId, status) => {
+    const isCompleted = status === 2;
+    const currentChapter = get().chapters.find(c => c.chapter_id === chapterId);
+    
+    try {
+      const { error } = await supabase
+        .from('sde_progress')
+        .update({ 
+          completed: isCompleted,
+          status: status,
+          completed_at: isCompleted ? new Date().toISOString() : null
+        })
+        .eq('chapter_id', chapterId);
+
+      if (error) throw error;
+
+      if (isCompleted && !currentChapter.completed) {
+        await awardXP(100, `roadmap:${currentChapter.title}`);
+        
+        const { data: player } = await supabase.from('player_state').select('*').single();
+        const updates = {};
+        if (currentChapter.category === 'DSA') updates.stat_dsa = (player.stat_dsa || 0) + 1;
+        if (currentChapter.category === 'Backend') updates.stat_backend = (player.stat_backend || 0) + 1;
+        
+        if (Object.keys(updates).length > 0) {
+          await supabase.from('player_state').update(updates).eq('id', player.id);
+        }
+      }
+
+      await get().loadRoadmap();
+    } catch (err) {
+      console.error('Failed to update chapter status:', err);
+    }
+  },
+
+  updateNotes: async (chapterId, notes) => {
+    try {
+       await supabase
+        .from('sde_progress')
+        .update({ notes })
+        .eq('chapter_id', chapterId);
+        
+       set(state => ({
+         chapters: state.chapters.map(c => c.chapter_id === chapterId ? { ...c, notes } : c)
+       }));
+    } catch (err) {
+      console.error('Failed to update notes:', err);
+    }
+  },
+
+  updateDsaSolved: async (count) => {
+    try {
+      const { data: player } = await supabase.from('player_state').select('id').single();
+      await supabase.from('player_state').update({ stat_dsa_solved: count }).eq('id', player.id);
+      set({ dsaSolved: count });
+    } catch (err) {
+      console.error('Failed to update DSA solved count:', err);
+    }
+  }
+}));
+
+--- src/store/examStore.js ---
+import { create } from 'zustand';
+import { supabase } from '../lib/supabase';
+import { awardXP } from '../lib/xpEngine';
+import { rewards } from '../lib/rewards';
+
+export const useExamStore = create((set, get) => ({
+  semesters: [],
+  activeSem: null,
+  subjects: [],
+  checklists: {},
+  loading: false,
+
+  loadSemesters: async () => {
+    set({ loading: true });
+    try {
+      const { data: sems, error } = await supabase
+        .from('semesters')
+        .select('*')
+        .order('sem_number');
+      
+      if (error) throw error;
+
+      const active = sems.find(s => s.is_active) || sems[0];
+      set({ semesters: sems, activeSem: active, loading: false });
+      
+      if (active) {
+        await get().loadSemesterContent(active.id);
+      }
+    } catch (err) {
+      console.error('Failed to load semesters:', err);
+      set({ loading: false });
+    }
+  },
+
+  loadSemesterContent: async (semId) => {
+    set({ loading: true });
+    try {
+      const { data: subjects } = await supabase
+        .from('sem_subjects')
+        .select('*')
+        .eq('sem_id', semId)
+        .order('created_at');
+
+      const subjectIds = subjects?.map(s => s.id) || [];
+      const { data: checklistItems } = await supabase
+        .from('subject_checklist')
+        .select('*')
+        .in('subject_id', subjectIds);
+
+      const checklistMap = {};
+      checklistItems?.forEach(item => {
+        if (!checklistMap[item.subject_id]) checklistMap[item.subject_id] = [];
+        checklistMap[item.subject_id].push(item);
+      });
+
+      set({ subjects: subjects || [], checklists: checklistMap, loading: false });
+    } catch (err) {
+      console.error('Failed to load semester content:', err);
+      set({ loading: false });
+    }
+  },
+
+  switchSemester: async (semId) => {
+    const { semesters } = get();
+    const active = semesters.find(s => s.id === semId);
+    set({ activeSem: active });
+    await get().loadSemesterContent(semId);
+  },
+
+  updateSemesterDates: async (semId, dates) => {
+    try {
+      const { data, error } = await supabase
+        .from('semesters')
+        .update(dates)
+        .eq('id', semId)
+        .select()
+        .single();
+      
+      if (!error) {
+        set(state => ({
+          semesters: state.semesters.map(s => s.id === semId ? data : s),
+          activeSem: state.activeSem.id === semId ? data : state.activeSem
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to update semester dates:', err);
+    }
+  },
+
+  updateSubjectReadiness: async (id, readiness) => {
+    try {
+      const { error } = await supabase
+        .from('sem_subjects')
+        .update({ readiness })
+        .eq('id', id);
+      
+      if (!error) {
+        set(state => ({
+          subjects: state.subjects.map(s => s.id === id ? { ...s, readiness } : s)
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to update readiness:', err);
+    }
+  },
+
+  updateMarks: async (id, field, value) => {
+    try {
+      const { error } = await supabase
+        .from('sem_subjects')
+        .update({ [field]: value })
+        .eq('id', id);
+      
+      if (!error) {
+        set(state => ({
+          subjects: state.subjects.map(s => s.id === id ? { ...s, [field]: value } : s)
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to update marks:', err);
+    }
+  },
+
+  toggleChecklistItem: async (itemId, subjectId, completed) => {
+    try {
+      const { data, error } = await supabase
+        .from('subject_checklist')
+        .update({ completed, completed_at: completed ? new Date() : null })
+        .eq('id', itemId)
+        .select()
+        .single();
+      
+      if (!error) {
+        set(state => {
+          const items = state.checklists[subjectId].map(i => i.id === itemId ? data : i);
+          return {
+            checklists: { ...state.checklists, [subjectId]: items }
+          };
+        });
+      }
+    } catch (err) {
+      console.error('Failed to toggle checklist item:', err);
+    }
+  },
+
+  addChecklistItem: async (subjectId, type, text) => {
+    try {
+      const { data, error } = await supabase
+        .from('subject_checklist')
+        .insert([{ subject_id: subjectId, type, item_text: text }])
+        .select()
+        .single();
+      
+      if (!error) {
+        set(state => {
+          const items = [...(state.checklists[subjectId] || []), data];
+          return {
+            checklists: { ...state.checklists, [subjectId]: items }
+          };
+        });
+      }
+    } catch (err) {
+      console.error('Failed to add checklist item:', err);
+    }
+  }
+}));
+
+--- src/store/tradingStore.js ---
+import { create } from 'zustand';
+import { supabase } from '../lib/supabase';
+import { awardXP } from '../lib/xpEngine';
+import { rewards } from '../lib/rewards';
+import { seedTradingSystem } from '../lib/tradingSeeder';
+
+export const useTradingStore = create((set, get) => ({
+  trades: [],
+  phases: [],
+  journalEntries: [],
+  moneyEntries: [],
+  withdrawals: [],
+  loading: false,
+
+  loadTradingData: async () => {
+    set({ loading: true });
+    try {
+      await seedTradingSystem();
+      
+      const [tradesRes, phasesRes, journalRes, moneyRes, withRes] = await Promise.all([
+        supabase.from('trades').select('*').order('date', { ascending: false }),
+        supabase.from('trading_phases').select('*').order('phase_number', { ascending: true }),
+        supabase.from('trade_journal').select('*').order('entry_date', { ascending: false }),
+        supabase.from('money_tracker').select('*').order('entry_date', { ascending: false }),
+        supabase.from('withdrawals').select('*').order('withdrawal_date', { ascending: false })
+      ]);
+
+      set({ 
+        trades: tradesRes.data || [], 
+        phases: phasesRes.data || [], 
+        journalEntries: journalRes.data || [],
+        moneyEntries: moneyRes.data || [],
+        withdrawals: withRes.data || [],
+        loading: false 
+      });
+    } catch (err) {
+      console.error('Failed to load trading data:', err);
+      set({ loading: false });
+    }
+  },
+
+  logTrade: async (tradeData) => {
+    try {
+      const { data, error } = await supabase.from('trades').insert([tradeData]).select().single();
+      if (error) throw error;
+
+      if (tradeData.rules_followed === 'YES') {
+        await awardXP(30, 'Trade logged — rules followed');
+      } else if (tradeData.rules_followed === 'PARTIAL') {
+        await awardXP(15, 'Trade logged — partial rules');
+      } else if (tradeData.rules_followed === 'NO') {
+        await rewards.applyPenalty(2000, 'Rules broken');
+        await awardXP(-20, 'Penalty: Rules broken');
+      }
+
+      await get().loadTradingData();
+      return data;
+    } catch (err) {
+      console.error('Failed to log trade:', err);
+      throw err;
+    }
+  },
+
+  addJournalEntry: async (entry) => {
+    try {
+      const { data, error } = await supabase.from('trade_journal').insert([entry]).select().single();
+      if (error) throw error;
+      await awardXP(10, 'Daily journal entry completed');
+      await get().loadTradingData();
+      return data;
+    } catch (err) {
+      console.error('Failed to add journal entry:', err);
+      throw err;
+    }
+  },
+
+  addMoneyEntry: async (entry) => {
+    try {
+      const { data, error } = await supabase.from('money_tracker').insert([entry]).select().single();
+      if (error) throw error;
+      await get().loadTradingData();
+      return data;
+    } catch (err) {
+      console.error('Failed to add money entry:', err);
+      throw err;
+    }
+  },
+
+  logWithdrawal: async (entry) => {
+    try {
+      const { data, error } = await supabase.from('withdrawals').insert([entry]).select().single();
+      if (error) throw error;
+      await get().loadTradingData();
+      return data;
+    } catch (err) {
+      console.error('Failed to log withdrawal:', err);
+      throw err;
+    }
+  },
+
+  updatePhase: async (phaseId, completed) => {
+    try {
+      await supabase.from('trading_phases').update({ completed }).eq('id', phaseId);
+      await get().loadTradingData();
+    } catch (err) {
+      console.error('Failed to update phase:', err);
+    }
+  }
+}));
+
+--- src/store/characterStore.js ---
+import { create } from 'zustand';
+import { supabase } from '../lib/supabase';
+import { awardXP } from '../lib/xpEngine';
+import { calculateAllStats } from '../lib/statCalculator';
+
+export const useCharacterStore = create((set, get) => ({
+  stats: {
+    dsa: 0,
+    sysdesign: 0,
+    backend: 0,
+    trading: 0,
+    physique: 0,
+    analytical: 0
+  },
+  badges: [],
+  brainLogs: [],
+  xpEvents: [],
+  playerState: null,
+  loading: false,
+
+  loadCharacterData: async () => {
+    set({ loading: true });
+    try {
+      const { data: player } = await supabase.from('player_state').select('*').single();
+      
+      const { data: bLogs } = await supabase
+        .from('brain_logs')
+        .select('*')
+        .order('logged_at', { ascending: false });
+
+      const { data: allBadges } = await supabase
+        .from('badges')
+        .select('*')
+        .order('order_index', { ascending: true });
+
+      const { data: xLogs } = await supabase
+        .from('xp_log')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      set({ 
+        playerState: player,
+        stats: {
+          dsa: player?.stat_dsa || 0,
+          sysdesign: player?.stat_sysdesign || 0,
+          backend: player?.stat_backend || 0,
+          trading: player?.stat_trading || 0,
+          physique: player?.stat_physique || 0,
+          analytical: player?.stat_analytical || 0
+        },
+        badges: allBadges || [],
+        brainLogs: bLogs || [],
+        xpEvents: xLogs || [],
+        loading: false 
+      });
+
+      const newStats = await calculateAllStats();
+      if (newStats) set({ stats: newStats });
+
+    } catch (err) {
+      console.error('Failed to load character data:', err);
+      set({ loading: false });
+    }
+  },
+
+  recalculate: async () => {
+    set({ loading: true });
+    const newStats = await calculateAllStats();
+    if (newStats) set({ stats: newStats });
+    set({ loading: false });
+  },
+
+  submitBrainLog: async (entry) => {
+    try {
+      const { data, error } = await supabase
+        .from('brain_logs')
+        .insert([{
+          ...entry,
+          xp_awarded: 20
+        }])
+        .select()
+        .single();
+      
+      if (error) throw error;
+
+      set(state => ({ brainLogs: [data, ...state.brainLogs] }));
+      await awardXP(20, 'character:brain_log');
+      await get().recalculate();
+      
+      return { success: true, data };
+    } catch (err) {
+      console.error('Failed to log brain session:', err);
+      return { success: false, error: err };
+    }
+  }
+}));
+
+--- src/store/financeStore.js ---
+import { create } from 'zustand';
+import { supabase } from '../lib/supabase';
+import { awardXP } from '../lib/xpEngine';
+import { useWalletStore } from './walletStore';
+
+export const useFinanceStore = create((set, get) => ({
+  books: [],
+  milestones: [],
+  curiosityNodes: [],
+  readingStreak: 0,
+  loading: false,
+  lastLoaded: null,
+
+  loadFinanceData: async (force = false) => {
+    if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
+    set({ loading: true });
+    try {
+      const { data: books } = await supabase
+        .from('books')
+        .select('*')
+        .order('order_index', { ascending: true });
+
+      const { data: milestones } = await supabase
+        .from('income_milestones')
+        .select('*')
+        .order('order_index', { ascending: true });
+
+      const { data: nodes } = await supabase
+        .from('curiosity_nodes')
+        .select('*')
+        .order('order_index', { ascending: true });
+
+      const { data: logs } = await supabase
+        .from('xp_transactions')
+        .select('created_at')
+        .ilike('reason', '%book%')
+        .order('created_at', { ascending: false });
+      
+      const streak = calculateStreak(logs?.map(l => l.created_at) || []);
+
+      set({ 
+        books: books || [], 
+        milestones: milestones || [],
+        curiosityNodes: nodes || [],
+        readingStreak: streak,
+        loading: false,
+        lastLoaded: Date.now()
+      });
+    } catch (err) {
+      console.error('Failed to load finance data:', err);
+      set({ loading: false });
+    }
+  },
+
+  startBook: async (id) => {
+    try {
+      await supabase.from('books').update({ 
+        status: 'READING', 
+        started_at: new Date().toISOString() 
+      }).eq('id', id);
+      await get().loadFinanceData();
+    } catch (err) {
+      console.error('Failed to start book:', err);
+    }
+  },
+
+  completeBook: async (id) => {
+    try {
+      const book = get().books.find(b => b.id === id);
+      await supabase.from('books').update({ 
+        status: 'COMPLETED',
+        completed: true,
+        completed_at: new Date().toISOString() 
+      }).eq('id', id);
+      
+      await awardXP(200, `book_complete:${book.title}`);
+      await useWalletStore.getState().earnReward(50, `Finished book: ${book.title}`, 'reading');
+      
+      await get().loadFinanceData();
+    } catch (err) {
+      console.error('Failed to complete book:', err);
+    }
+  },
+
+  updateBookReview: async (id, { rating, takeaway }) => {
+    try {
+      const updates = {};
+      if (rating !== undefined) updates.rating = rating;
+      if (takeaway !== undefined) updates.one_line_takeaway = takeaway;
+      
+      await supabase.from('books').update(updates).eq('id', id);
+      
+      set(state => ({
+        books: state.books.map(b => b.id === id ? { ...b, ...updates } : b)
+      }));
+    } catch (err) {
+      console.error('Failed to update book review:', err);
+    }
+  },
+
+  markMilestoneAchieved: async (id) => {
+    try {
+      const milestone = get().milestones.find(m => m.id === id);
+      await supabase.from('income_milestones').update({ 
+        status: 'ACHIEVED',
+        completed: true,
+        completed_at: new Date().toISOString()
+      }).eq('id', id);
+      
+      await awardXP(300, `milestone:${milestone.title}`);
+      
+      const reward = milestone.amount_inr > 1000 ? 500 : 100;
+      await useWalletStore.getState().earnReward(reward, `Milestone Achieved: ${milestone.title}`, 'finance');
+      
+      await get().loadFinanceData();
+    } catch (err) {
+      console.error('Failed to achieve milestone:', err);
+    }
+  }
+}));
+
+function calculateStreak(dates) {
+  if (!dates || dates.length === 0) return 0;
+  
+  const sortedDates = [...new Set(dates.map(d => d.split('T')[0]))].sort().reverse();
+  const today = new Date().toISOString().split('T')[0];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  
+  if (sortedDates[0] !== today && sortedDates[0] !== yesterday) return 0;
+  
+  let streak = 0;
+  let currentPos = new Date(sortedDates[0]);
+  
+  for (let i = 0; i < sortedDates.length; i++) {
+    const d = new Date(sortedDates[i]);
+    const diff = (currentPos - d) / (1000 * 60 * 60 * 24);
+    
+    if (diff === 0) {
+      streak++;
+    } else if (diff === 1) {
+      streak++;
+      currentPos = d;
+    } else {
+      break;
+    }
+  }
+  
+  return streak;
+}

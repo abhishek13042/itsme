@@ -1,0 +1,2357 @@
+﻿import { create } from 'zustand';
+import { supabase } from '../lib/supabase';
+import { completeQuest, completeBossTask, getBossStatus, checkWeeklyBonus } from '../lib/questEngine';
+
+export const useQuestStore = create((set, get) => ({
+  activeQuests: [],
+  completedQuests: [],
+  dailyQuests: [],
+  todayCompletions: [],
+  boss: null,
+  bossTasks: [],
+  hpPercent: 0,
+  isBossDefeated: false,
+  weeklyProgress: 0,
+  penalties: [],
+  loading: false,
+  lastLoaded: null,
+  lastDailiesLoaded: null,
+
+  loadQuests: async (force = false) => {
+    if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
+    set({ loading: true });
+    try {
+      const { data: allQuests, error } = await supabase
+        .from('quests')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      const active = allQuests?.filter(q => !q.completed) || [];
+      const completed = allQuests?.filter(q => q.completed) || [];
+
+      set({
+        activeQuests: active, 
+        completedQuests: completed,
+        loading: false,
+        lastLoaded: Date.now()
+      });
+    } catch (err) {
+      console.error('Failed to load quests:', err);
+      set({ loading: false });
+    }
+  },
+
+  loadPenalties: async () => {
+    try {
+      const { data } = await supabase
+        .from('penalties')
+        .select('*')
+        .order('created_at', { ascending: false });
+      set({ penalties: data || [] });
+    } catch (err) {
+      console.error('Failed to load penalties:', err);
+    }
+  },
+
+  loadBoss: async () => {
+    try {
+      const status = await getBossStatus();
+      set({
+        boss: status.boss,
+        bossTasks: status.tasks,
+        hpPercent: status.hpPercent,
+        isBossDefeated: status.isDefeated
+      });
+    } catch (err) {
+      console.error('Failed to load boss status:', err);
+    }
+  },
+
+  completeQuest: async (questId) => {
+    try {
+      const result = await completeQuest(questId);
+      await get().loadQuests(); // Refresh lists and weekly progress
+      return result;
+    } catch (err) {
+      console.error('Failed to complete quest:', err);
+      throw err;
+    }
+  },
+
+  completeBossTask: async (taskId) => {
+    try {
+      const result = await completeBossTask(taskId);
+      await get().loadBoss(); // Refresh HP and defeat status
+      return result;
+    } catch (err) {
+      console.error('Failed to complete boss task:', err);
+      throw err;
+    }
+  },
+
+  loadDailyQuests: async (force = false) => {
+    if (!force && get().lastDailiesLoaded && Date.now() - get().lastDailiesLoaded < 120000) return;
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const { data: dailies } = await supabase.from('daily_quests').select('*').eq('is_active', true);
+      const { data: completions } = await supabase
+        .from('daily_completions')
+        .select('*, daily_quests(title, xp_reward, domain)')
+        .eq('completed_date', today);
+      
+      set({ 
+        dailyQuests: dailies || [], 
+        todayCompletions: completions?.map(c => ({
+          ...c,
+          quest_title: c.daily_quests?.title,
+          xp_reward: c.daily_quests?.xp_reward,
+          domain: c.daily_quests?.domain
+        })) || [],
+        lastDailiesLoaded: Date.now()
+      });
+    } catch (err) {
+      console.error('Failed to load daily quests:', err);
+    }
+  },
+
+  completeDaily: async (questId) => {
+    try {
+      const { completeDailyQuest } = await import('../lib/questEngine');
+      const result = await completeDailyQuest(questId);
+      if (result.alreadyCompleted) return result;
+      
+      await get().loadDailyQuests();
+      return result;
+    } catch (err) {
+      console.error('Failed to complete daily:', err);
+      throw err;
+    }
+  },
+
+  addDailyQuest: async (quest) => {
+    try {
+      const { data, error } = await supabase
+        .from('daily_quests')
+        .insert([{ ...quest, is_active: true }])
+        .select()
+        .single();
+      
+      if (error) throw error;
+      set(state => ({ dailyQuests: [data, ...state.dailyQuests] }));
+      return data;
+    } catch (err) {
+      console.error('Failed to add daily quest:', err);
+      throw err;
+    }
+  },
+
+  deleteDailyQuest: async (questId) => {
+    try {
+      const { error } = await supabase
+        .from('daily_quests')
+        .update({ is_active: false })
+        .eq('id', questId);
+      
+      if (error) throw error;
+      set(state => ({ dailyQuests: state.dailyQuests.filter(q => q.id !== questId) }));
+    } catch (err) {
+      console.error('Failed to delete daily quest:', err);
+      throw err;
+    }
+  }
+}));
+import { create } from 'zustand';
+import { supabase } from '../lib/supabase';
+import { awardXP, checkAndUpdateStreak, getStreakMultiplier, LEVEL_FORMULA } from '../lib/xpEngine';
+
+export const useXpStore = create((set, get) => ({
+  xp: 0,
+  level: 1,
+  streakDays: 0,
+  multiplier: 1.0,
+  badges: [],
+  xpLog: [],
+  loading: false,
+  lastLoaded: null,
+
+  loadPlayerState: async (force = false) => {
+    if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
+    set({ loading: true });
+    try {
+      const { data: player, error } = await supabase
+        .from('player_state')
+        .select('*')
+        .single();
+      
+      if (error && error.code !== 'PGRST116') throw error;
+
+      if (error?.code === 'PGRST116') {
+        const { data: newPlayer, error: createError } = await supabase
+          .from('player_state')
+          .insert([{ xp: 0, level: 1, streak_days: 0, last_active_date: new Date().toISOString().split('T')[0] }])
+          .select()
+          .single();
+        if (createError) throw createError;
+        
+        set({
+          xp: 0,
+          level: 1,
+          streakDays: 0,
+          multiplier: 1.0,
+          badges: [],
+          loading: false
+        });
+        return;
+      }
+
+      const { data: logs } = await supabase
+        .from('xp_log')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(20);
+
+      if (player) {
+        set({
+          xp: player.xp,
+          level: player.level || LEVEL_FORMULA.getLevel(player.xp),
+          streakDays: player.streak_days,
+          multiplier: getStreakMultiplier(player.streak_days),
+          badges: player.badges || [],
+          xpLog: logs || [],
+          loading: false,
+          lastLoaded: Date.now()
+        });
+      }
+    } catch (err) {
+      console.error('Failed to load player XP state:', err);
+      set({ loading: false });
+    }
+  },
+
+  awardXP: async (amount, source) => {
+    try {
+      const result = await awardXP(amount, source);
+      
+      // Update local state with fresh data from engine
+      set({
+        xp: result.player.xp,
+        level: result.player.level,
+        badges: result.player.badges,
+        multiplier: result.multiplier
+      });
+
+      // Refresh log
+      const { data: logs } = await supabase
+        .from('xp_log')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(20);
+      set({ xpLog: logs || [] });
+
+      return result;
+    } catch (err) {
+      console.error('Failed to award XP:', err);
+      throw err;
+    }
+  },
+
+  checkStreak: async () => {
+    try {
+      const result = await checkAndUpdateStreak();
+      set({
+        streakDays: result.streakDays,
+        multiplier: getStreakMultiplier(result.streakDays)
+      });
+      return result;
+    } catch (err) {
+      console.error('Failed to check streak:', err);
+      throw err;
+    }
+  }
+}));
+import React from 'react';
+import { NavLink } from 'react-router-dom';
+import { LayoutDashboard, Target, Swords, User, Settings } from 'lucide-react';
+import { clsx } from 'clsx';
+
+const BottomNav = () => {
+  const items = [
+    { path: '/', icon: LayoutDashboard, label: 'Home' },
+    { path: '/tracker', icon: Target, label: 'Tracker' },
+    { path: '/quests', icon: Swords, label: 'Quests' },
+    { path: '/character', icon: User, label: 'Stats' },
+    { path: '/settings', icon: Settings, label: 'Menu' },
+  ];
+
+  return (
+    <nav className="fixed bottom-0 left-0 w-full bg-white border-t border-border-default md:hidden flex justify-around items-center h-16 px-2 z-50">
+      {items.map((item) => (
+        <NavLink
+          key={item.path}
+          to={item.path}
+          className={({ isActive }) =>
+            clsx(
+              "flex flex-col items-center justify-center gap-1 flex-1 h-full transition-all duration-200",
+              isActive ? "text-navy-900" : "text-text-secondary"
+            )
+          }
+        >
+          <item.icon className="w-5 h-5" />
+          <span className="text-[10px] font-bold uppercase tracking-wider">{item.label}</span>
+        </NavLink>
+      ))}
+    </nav>
+  );
+};
+
+export default BottomNav;
+import React, { useState } from 'react';
+import { useQuestStore } from '../store/questStore';
+import { useXpStore } from '../store/xpStore';
+import { motion, AnimatePresence } from 'framer-motion';
+import { format } from 'date-fns';
+import { clsx } from 'clsx';
+import {
+  Plus, Check, Trash2, Sword, Zap, Star,
+  ChevronDown, ChevronUp, Filter, Target,
+  Flame, Clock, RotateCcw
+} from 'lucide-react';
+
+const QuestLog = () => {
+  // === STATE ===
+  const [activeTab, setActiveTab] = useState('daily');
+  // tabs: 'daily' | 'completed'
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newQuest, setNewQuest] = useState({
+    title: '',
+    description: '',
+    xp_reward: 100,
+    domain: 'General',
+    difficulty: 'Medium'
+  });
+  const [filter, setFilter] = useState('All');
+  const [completingId, setCompletingId] = useState(null);
+
+  // === STORE ===
+  const { 
+    dailyQuests, 
+    todayCompletions, 
+    addDailyQuest, 
+    completeDaily, 
+    deleteDailyQuest 
+  } = useQuestStore();
+
+  // === DERIVED DATA ===
+  const domains = ['All', 'SDE', 'Trading', 'Health', 'Exam', 'Finance', 'General'];
+  const completedCount = todayCompletions?.length || 0;
+  const totalDaily = dailyQuests?.length || 0;
+  const completionPercent = totalDaily 
+    ? Math.floor((completedCount / totalDaily) * 100) : 0;
+
+  return (
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6">
+
+      {/* HEADER */}
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Sword size={14} className="text-[#E07B39]"/>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              Quest Log
+            </p>
+          </div>
+          <h1 className="text-2xl font-bold text-[#1A1A2E] 
+            font-['Inter'] tracking-tight">
+            Daily Missions
+          </h1>
+          <p className="text-xs text-[#9A9590] font-['Inter'] mt-1">
+            {completedCount}/{totalDaily} completed today Â· 
+            {completionPercent}% done
+          </p>
+        </div>
+        <button
+          onClick={() => setShowAddForm(!showAddForm)}
+          className="flex items-center gap-2 bg-[#1A1A2E] text-white 
+            px-4 py-2.5 rounded-xl text-xs font-bold font-['Space_Mono'] 
+            uppercase tracking-wider hover:bg-[#2a2a4e] transition-all"
+        >
+          <Plus size={13}/>
+          Add Quest
+        </button>
+      </div>
+
+      {/* PROGRESS BAR */}
+      <div className="mb-6">
+        <div className="h-2 bg-white rounded-full border border-[#E5E0D8] 
+          overflow-hidden shadow-inner">
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${completionPercent}%` }}
+            transition={{ duration: 0.8, ease: 'easeOut' }}
+            className="h-full rounded-full shadow-lg"
+            style={{
+              background: completionPercent === 100 
+                ? '#1A6B4A' 
+                : completionPercent >= 50 
+                ? '#E07B39' 
+                : '#1A1A2E'
+            }}
+          />
+        </div>
+        {completionPercent === 100 && totalDaily > 0 && (
+          <motion.p
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-xs font-bold text-[#1A6B4A] font-['Space_Mono'] 
+              uppercase tracking-wider mt-2 text-center"
+          >
+            âš¡ All quests complete â€” legendary day
+          </motion.p>
+        )}
+      </div>
+
+      {/* ADD QUEST FORM */}
+      <AnimatePresence>
+        {showAddForm && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden mb-6"
+          >
+            <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 shadow-sm">
+              <p className="text-xs font-bold text-[#1A1A2E] 
+                font-['Space_Mono'] uppercase tracking-widest mb-4">
+                New Quest
+              </p>
+              
+              <input
+                type="text"
+                value={newQuest.title}
+                onChange={e => setNewQuest(p => 
+                  ({ ...p, title: e.target.value }))}
+                placeholder="What needs to be done?"
+                className="w-full bg-[#F5F4F0] border border-transparent 
+                  focus:border-[#E07B39] rounded-xl px-4 py-3 text-sm 
+                  font-['Inter'] text-[#1A1A2E] placeholder-[#9A9590] 
+                  focus:outline-none transition-all mb-3"
+              />
+              
+              <textarea
+                value={newQuest.description}
+                onChange={e => setNewQuest(p => 
+                  ({ ...p, description: e.target.value }))}
+                placeholder="Details (optional)..."
+                className="w-full bg-[#F5F4F0] border border-transparent 
+                  focus:border-[#E07B39] rounded-xl px-4 py-3 text-sm 
+                  font-['Inter'] text-[#1A1A2E] placeholder-[#9A9590] 
+                  focus:outline-none transition-all resize-none 
+                  min-h-[60px] mb-3"
+              />
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                <div>
+                  <p className="text-[9px] font-bold text-[#9A9590] 
+                    font-['Space_Mono'] uppercase tracking-wider mb-2">
+                    Domain
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {['General', 'SDE', 'Trading', 
+                      'Health', 'Exam', 'Finance'].map(d => (
+                      <button
+                        key={d}
+                        onClick={() => setNewQuest(p => 
+                          ({ ...p, domain: d }))}
+                        className={clsx(
+                          'px-2.5 py-1 rounded-lg text-[10px] font-bold',
+                          'font-["Space_Mono"] uppercase transition-all',
+                          newQuest.domain === d
+                            ? 'bg-[#1A1A2E] text-white'
+                            : 'bg-[#F5F4F0] text-[#9A9590] hover:bg-[#E5E0D8]'
+                        )}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[9px] font-bold text-[#9A9590] 
+                    font-['Space_Mono'] uppercase tracking-wider mb-2">
+                    Difficulty
+                  </p>
+                  <div className="flex gap-1.5">
+                    {[
+                      { d: 'Easy', xp: 50, color: '#1A6B4A' },
+                      { d: 'Medium', xp: 100, color: '#E07B39' },
+                      { d: 'Hard', xp: 200, color: '#C0392B' }
+                    ].map(({ d, xp, color }) => (
+                      <button
+                        key={d}
+                        onClick={() => setNewQuest(p => ({
+                          ...p, difficulty: d, xp_reward: xp
+                        }))}
+                        className={clsx(
+                          'flex-1 py-1.5 rounded-lg text-[10px] font-bold',
+                          'font-["Space_Mono"] uppercase transition-all border',
+                          newQuest.difficulty === d
+                            ? 'text-white border-transparent'
+                            : 'bg-white text-[#9A9590] border-[#E5E0D8]'
+                        )}
+                        style={newQuest.difficulty === d 
+                          ? { backgroundColor: color } : {}}
+                      >
+                        {d}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[9px] text-[#9A9590] font-['Space_Mono'] 
+                    mt-1">
+                    +{newQuest.xp_reward} XP reward
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    if (!newQuest.title.trim()) return;
+                    await addDailyQuest(newQuest);
+                    setNewQuest({
+                      title: '', description: '',
+                      xp_reward: 100, domain: 'General',
+                      difficulty: 'Medium'
+                    });
+                    setShowAddForm(false);
+                  }}
+                  className="flex-1 bg-[#1A6B4A] text-white py-2.5 
+                    rounded-xl text-xs font-bold font-['Space_Mono'] 
+                    uppercase tracking-wider hover:opacity-90 transition-all"
+                >
+                  Add Quest
+                </button>
+                <button
+                  onClick={() => setShowAddForm(false)}
+                  className="px-4 py-2.5 bg-[#F5F4F0] text-[#9A9590] 
+                    rounded-xl text-xs font-bold font-['Space_Mono'] 
+                    uppercase tracking-wider hover:bg-[#E5E0D8] transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* TABS */}
+      <div className="flex items-center gap-1 bg-white rounded-xl 
+        border border-[#E5E0D8] p-1 w-fit mb-5 overflow-x-auto">
+        {[
+          { id: 'daily', label: `Daily (${totalDaily})` },
+          { id: 'completed', label: `Done (${completedCount})` }
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={clsx(
+              'px-4 py-2 rounded-lg text-xs font-bold font-["Space_Mono"]',
+              'uppercase tracking-wider transition-all whitespace-nowrap',
+              activeTab === tab.id
+                ? 'bg-[#1A1A2E] text-white'
+                : 'text-[#9A9590] hover:text-[#1A1A2E]'
+            )}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* DOMAIN FILTER */}
+      <div className="flex gap-2 overflow-x-auto pb-2 mb-5 no-scrollbar">
+        {domains.map(d => (
+          <button
+            key={d}
+            onClick={() => setFilter(d)}
+            className={clsx(
+              'px-3 py-1.5 rounded-full text-[10px] font-bold',
+              'font-["Space_Mono"] uppercase tracking-wider',
+              'whitespace-nowrap transition-all border',
+              filter === d
+                ? 'bg-[#1A1A2E] text-white border-[#1A1A2E]'
+                : 'bg-white text-[#9A9590] border-[#E5E0D8]',
+              'hover:border-[#1A1A2E]'
+            )}
+          >
+            {d}
+          </button>
+        ))}
+      </div>
+
+      {/* QUEST LIST â€” DAILY TAB */}
+      {activeTab === 'daily' && (
+        <div className="flex flex-col gap-3">
+          {dailyQuests
+            ?.filter(q => filter === 'All' || q.domain === filter)
+            ?.map((quest, i) => {
+              const isDone = todayCompletions?.find(
+                c => c.quest_id === quest.id
+              );
+              const domainColors = {
+                SDE: { bg: '#EEF2FF', text: '#1A1A2E' },
+                Trading: { bg: '#FFF0E6', text: '#E07B39' },
+                Health: { bg: '#F0FDF4', text: '#1A6B4A' },
+                Exam: { bg: '#FEF2F2', text: '#C0392B' },
+                Finance: { bg: '#EEF2FF', text: '#1A1A2E' },
+                General: { bg: '#F5F4F0', text: '#9A9590' }
+              };
+              const dc = domainColors[quest.domain] 
+                || domainColors.General;
+
+              return (
+                <motion.div
+                  key={quest.id || i}
+                  layout
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.04 }}
+                  className={clsx(
+                    'bg-white rounded-2xl border transition-all',
+                    isDone
+                      ? 'border-[#1A6B4A]/30 opacity-70'
+                      : 'border-[#E5E0D8] hover:shadow-sm'
+                  )}
+                >
+                  <div className="flex items-center gap-3 p-4">
+                    
+                    {/* Complete button */}
+                    <button
+                      onClick={async () => {
+                        if (isDone) return;
+                        setCompletingId(quest.id);
+                        await completeDaily(quest.id);
+                        setCompletingId(null);
+                      }}
+                      disabled={!!isDone || completingId === quest.id}
+                      className={clsx(
+                        'w-6 h-6 rounded-full border-2 flex items-center',
+                        'justify-center shrink-0 transition-all',
+                        isDone
+                          ? 'bg-[#1A6B4A] border-[#1A6B4A]'
+                          : completingId === quest.id
+                          ? 'border-[#E07B39] animate-pulse'
+                          : 'border-[#E5E0D8] hover:border-[#1A6B4A]',
+                        'disabled:cursor-not-allowed'
+                      )}
+                    >
+                      {isDone && (
+                        <Check size={12} className="text-white" 
+                          strokeWidth={3}/>
+                      )}
+                    </button>
+
+                    {/* Quest info */}
+                    <div className="flex-1 min-w-0 px-1">
+                      <p className={clsx(
+                        'text-sm font-bold font-["Inter"]',
+                        isDone
+                          ? 'text-[#9A9590] line-through'
+                          : 'text-[#1A1A2E]'
+                      )}>
+                        {quest.title}
+                      </p>
+                      {quest.description && (
+                        <p className="text-[10px] text-[#9A9590] 
+                          font-['Inter'] mt-0.5 truncate">
+                          {quest.description}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Badges */}
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span
+                        className="hidden sm:inline-block text-[9px] font-bold font-['Space_Mono']
+                          uppercase px-2 py-0.5 rounded-full"
+                        style={{
+                          backgroundColor: dc.bg,
+                          color: dc.text
+                        }}
+                      >
+                        {quest.domain}
+                      </span>
+                      <span className="text-[10px] font-bold 
+                        text-[#1A6B4A] font-['Space_Mono'] whitespace-nowrap">
+                        +{quest.xp_reward}
+                      </span>
+                      <button
+                        onClick={() => deleteDailyQuest(quest.id)}
+                        className="p-1.5 rounded-lg text-[#9A9590] 
+                          hover:text-[#C0392B] hover:bg-red-50 
+                          transition-all"
+                      >
+                        <Trash2 size={12}/>
+                      </button>
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            })}
+
+          {dailyQuests?.filter(q => 
+            filter === 'All' || q.domain === filter
+          )?.length === 0 && (
+            <div className="text-center py-16">
+              <Target size={32} className="text-[#E5E0D8] 
+                mx-auto mb-3"/>
+              <p className="text-sm font-bold text-[#1A1A2E] 
+                font-['Inter'] mb-1">
+                No quests here
+              </p>
+              <p className="text-xs text-[#9A9590] font-['Inter']">
+                {filter !== 'All' 
+                  ? `No ${filter} quests. Change filter or add one.`
+                  : 'Add your first quest to get started.'}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* COMPLETED TAB */}
+      {activeTab === 'completed' && (
+        <div className="flex flex-col gap-3">
+          {todayCompletions?.length === 0 && (
+            <div className="text-center py-16">
+              <Check size={32} className="text-[#E5E0D8] mx-auto mb-3"/>
+              <p className="text-sm text-[#9A9590] font-['Inter']">
+                Nothing completed yet today.
+              </p>
+            </div>
+          )}
+          {todayCompletions?.map((item, i) => (
+            <motion.div
+              key={item.id || i}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.04 }}
+              className="bg-white rounded-2xl border border-[#1A6B4A]/20 
+                p-4 flex items-center gap-3"
+            >
+              <div className="w-6 h-6 rounded-full bg-[#1A6B4A] 
+                flex items-center justify-center shrink-0">
+                <Check size={12} className="text-white" strokeWidth={3}/>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-[#9A9590] 
+                  font-['Inter'] line-through truncate">
+                  {item.quest_title || item.title}
+                </p>
+              </div>
+              <span className="text-[10px] font-bold text-[#1A6B4A] 
+                font-['Space_Mono'] shrink-0">
+                +{item.xp_reward || 100} XP
+              </span>
+            </motion.div>
+          ))}
+        </div>
+      )}
+
+    </div>
+  );
+};
+
+export default QuestLog;
+import React, { useState, useMemo } from 'react';
+import { useXpStore } from '../store/xpStore';
+import { useHealthStore } from '../store/healthStore';
+import { useQuestStore } from '../store/questStore';
+import { useSdeStore } from '../store/sdeStore';
+import { useTradingStore } from '../store/tradingStore';
+import { motion } from 'framer-motion';
+import { format, subDays, startOfWeek, eachDayOfInterval } from 'date-fns';
+import { clsx } from 'clsx';
+import {
+  CalendarCheck, Flame, TrendingUp, Code2,
+  Heart, Zap, Target, BarChart3, Check,
+  ChevronRight, Award
+} from 'lucide-react';
+
+const Tracker = () => {
+  // === STATE ===
+  const [selectedWeek, setSelectedWeek] = useState(0);
+  // 0 = this week, 1 = last week etc
+
+  // === STORE DATA ===
+  const { xp, level, streakDays } = useXpStore();
+  const { history, todayLog } = useHealthStore();
+  const { dailyQuests, todayCompletions } = useQuestStore();
+  const { chapters, dsaSolved } = useSdeStore();
+  const { trades } = useTradingStore();
+
+  // === DERIVED â€” Week Days ===
+  const weekStart = startOfWeek(
+    subDays(new Date(), selectedWeek * 7), 
+    { weekStartsOn: 1 }
+  );
+  
+  // Calculate the end of the interval correctly
+  // If selectedWeek is 0, end is today. If selectedWeek > 0, end is (selectedWeek-1)*7 days ago.
+  const weekEnd = selectedWeek === 0 
+    ? new Date() 
+    : subDays(new Date(), (selectedWeek - 0) * 7 - 6); // Just get 7 days from start
+
+  const weekDays = useMemo(() => {
+    const start = weekStart;
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    
+    return eachDayOfInterval({
+      start: start,
+      end: end
+    }).slice(0, 7);
+  }, [weekStart]);
+
+  return (
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6">
+
+      {/* HEADER */}
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <CalendarCheck size={14} className="text-[#E07B39]"/>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              Tracker
+            </p>
+          </div>
+          <h1 className="text-2xl font-bold text-[#1A1A2E] 
+            font-['Inter'] tracking-tight">
+            Weekly Progress
+          </h1>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setSelectedWeek(w => w + 1)}
+            className="px-3 py-1.5 bg-white border border-[#E5E0D8] 
+              rounded-lg text-[10px] font-bold font-['Space_Mono'] 
+              uppercase text-[#9A9590] hover:border-[#1A1A2E] 
+              transition-all"
+          >
+            â† Prev
+          </button>
+          <button
+            onClick={() => setSelectedWeek(0)}
+            disabled={selectedWeek === 0}
+            className="px-3 py-1.5 bg-[#1A1A2E] text-white 
+              rounded-lg text-[10px] font-bold font-['Space_Mono'] 
+              uppercase disabled:opacity-40 transition-all"
+          >
+            This Week
+          </button>
+        </div>
+      </div>
+
+      {/* WEEK HEATMAP â€” 7 day strip */}
+      <div className="bg-white rounded-2xl border border-[#E5E0D8] 
+        p-5 mb-6 shadow-sm">
+        <p className="text-[10px] font-bold text-[#9A9590] 
+          font-['Space_Mono'] uppercase tracking-widest mb-4">
+          Week at a Glance
+        </p>
+        <div className="grid grid-cols-7 gap-2">
+          {weekDays.map((day, i) => {
+            const dateStr = format(day, 'yyyy-MM-dd');
+            const healthLog = history?.find(
+              h => h.log_date === dateStr
+            );
+            const isToday = dateStr === format(new Date(), 'yyyy-MM-dd');
+            const score = healthLog?.day_score || 0;
+            const gymDone = healthLog?.gym_done || false;
+
+            return (
+              <div key={i} className="flex flex-col items-center gap-2">
+                <p className="text-[9px] font-bold text-[#9A9590] 
+                  font-['Space_Mono'] uppercase">
+                  {format(day, 'EEE')}
+                </p>
+                <div className={clsx(
+                  'w-full aspect-square rounded-xl flex items-center',
+                  'justify-center relative border transition-all duration-500',
+                  isToday ? 'border-[#E07B39]' : 'border-transparent',
+                  score === 0 ? 'bg-[#F5F4F0]' :
+                  score === 100 ? 'bg-[#1A6B4A]' :
+                  score >= 80 ? 'bg-[#E07B39]' :
+                  score >= 50 ? 'bg-[#FFC49B]' : 'bg-[#FFE4CC]'
+                )}>
+                  <span className={clsx(
+                    'text-[10px] font-bold font-["Space_Mono"]',
+                    score > 0 ? 'text-white' : 'text-[#9A9590]'
+                  )}>
+                    {score > 0 ? `${score}%` : format(day, 'd')}
+                  </span>
+                </div>
+                {gymDone && (
+                  <div className="w-1.5 h-1.5 rounded-full 
+                    bg-[#E07B39]"/>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="flex items-center flex-wrap gap-4 mt-4 pt-4 
+          border-t border-[#F5F4F0]">
+          {[
+            { color: '#1A6B4A', label: 'Perfect (100%)' },
+            { color: '#E07B39', label: 'Good (80%+)' },
+            { color: '#FFC49B', label: 'Okay (50%+)' },
+            { color: '#F5F4F0', label: 'Not logged', border: true }
+          ].map((item, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <div className={clsx(
+                'w-3 h-3 rounded',
+                item.border ? 'border border-[#E5E0D8]' : ''
+              )}
+                style={{ backgroundColor: item.color }}
+              />
+              <span className="text-[9px] text-[#9A9590] font-['Inter']">
+                {item.label}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* DOMAIN STATS GRID */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mb-6">
+
+        {/* HEALTH */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-[#F0FDF4] 
+                flex items-center justify-center">
+                <Heart size={15} className="text-[#1A6B4A]"/>
+              </div>
+              <p className="text-xs font-bold text-[#1A1A2E] 
+                font-['Space_Mono'] uppercase tracking-wide">
+                Health
+              </p>
+            </div>
+            <a href="/health" className="text-[9px] font-bold 
+              text-[#9A9590] font-['Space_Mono'] uppercase 
+              hover:text-[#1A1A2E] transition-colors flex 
+              items-center gap-1">
+              Open <ChevronRight size={10}/>
+            </a>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              {
+                label: 'Today Score',
+                value: `${todayLog?.day_score || 0}%`,
+                color: (todayLog?.day_score || 0) >= 80 
+                  ? '#1A6B4A' : '#E07B39'
+              },
+              {
+                label: 'Gym Streak',
+                value: `${history?.filter(h => h.gym_done)
+                  ?.length || 0} days`,
+                color: '#E07B39'
+              },
+              {
+                label: 'Perfect Days',
+                value: history?.filter(h => h.day_score === 100)
+                  ?.length || 0,
+                color: '#1A6B4A'
+              }
+            ].map((stat, i) => (
+              <div key={i} className="bg-[#F5F4F0] rounded-xl p-3 
+                text-center">
+                <p className="text-[9px] text-[#9A9590] 
+                  font-['Space_Mono'] uppercase tracking-wider mb-1">
+                  {stat.label}
+                </p>
+                <p className="text-sm font-bold font-['Space_Mono']"
+                  style={{ color: stat.color }}>
+                  {stat.value}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* SDE */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-[#EEF2FF] 
+                flex items-center justify-center">
+                <Code2 size={15} className="text-[#1A1A2E]"/>
+              </div>
+              <p className="text-xs font-bold text-[#1A1A2E] 
+                font-['Space_Mono'] uppercase tracking-wide">
+                SDE Track
+              </p>
+            </div>
+            <a href="/sde" className="text-[9px] font-bold 
+              text-[#9A9590] font-['Space_Mono'] uppercase 
+              hover:text-[#1A1A2E] transition-colors flex 
+              items-center gap-1">
+              Open <ChevronRight size={10}/>
+            </a>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              {
+                label: 'Chapters Done',
+                value: chapters?.filter(c => c.completed)
+                  ?.length || 0,
+                color: '#1A1A2E'
+              },
+              {
+                label: 'Problems Solved',
+                value: dsaSolved || 0,
+                color: '#E07B39'
+              },
+              {
+                label: 'Total Chapters',
+                value: chapters?.length || 0,
+                color: '#9A9590'
+              }
+            ].map((stat, i) => (
+              <div key={i} className="bg-[#F5F4F0] rounded-xl p-3 
+                text-center">
+                <p className="text-[9px] text-[#9A9590] 
+                  font-['Space_Mono'] uppercase tracking-wider mb-1">
+                  {stat.label}
+                </p>
+                <p className="text-sm font-bold font-['Space_Mono']"
+                  style={{ color: stat.color }}>
+                  {stat.value}
+                </p>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 h-1.5 bg-[#F5F4F0] rounded-full 
+            overflow-hidden">
+            <div
+              className="h-full bg-[#1A1A2E] rounded-full transition-all duration-700"
+              style={{
+                width: `${chapters?.length
+                  ? (chapters.filter(c => c.completed).length 
+                    / chapters.length) * 100
+                  : 0}%`
+              }}
+            />
+          </div>
+        </div>
+
+        {/* TRADING */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-[#FFF0E6] 
+                flex items-center justify-center">
+                <TrendingUp size={15} className="text-[#E07B39]"/>
+              </div>
+              <p className="text-xs font-bold text-[#1A1A2E] 
+                font-['Space_Mono'] uppercase tracking-wide">
+                Trading
+              </p>
+            </div>
+            <a href="/trading" className="text-[9px] font-bold 
+              text-[#9A9590] font-['Space_Mono'] uppercase 
+              hover:text-[#1A1A2E] transition-colors flex 
+              items-center gap-1">
+              Open <ChevronRight size={10}/>
+            </a>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              {
+                label: 'Total Trades',
+                value: trades?.length || 0,
+                color: '#E07B39'
+              },
+              {
+                label: 'This Week',
+                value: trades?.filter(t => {
+                  const tradeDate = new Date(t.date || t.created_at);
+                  return tradeDate >= weekStart;
+                })?.length || 0,
+                color: '#1A1A2E'
+              },
+              {
+                label: 'Rules Followed',
+                value: `${trades?.filter(t => 
+                  t.rules_followed === 'YES')?.length || 0}`,
+                color: '#1A6B4A'
+              }
+            ].map((stat, i) => (
+              <div key={i} className="bg-[#F5F4F0] rounded-xl p-3 
+                text-center">
+                <p className="text-[9px] text-[#9A9590] 
+                  font-['Space_Mono'] uppercase tracking-wider mb-1">
+                  {stat.label}
+                </p>
+                <p className="text-sm font-bold font-['Space_Mono']"
+                  style={{ color: stat.color }}>
+                  {stat.value}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* QUEST STATS */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-xl bg-[#F5F3FF] 
+                flex items-center justify-center">
+                <Target size={15} className="text-[#7C3AED]"/>
+              </div>
+              <p className="text-xs font-bold text-[#1A1A2E] 
+                font-['Space_Mono'] uppercase tracking-wide">
+                Quests
+              </p>
+            </div>
+            <a href="/quests" className="text-[9px] font-bold 
+              text-[#9A9590] font-['Space_Mono'] uppercase 
+              hover:text-[#1A1A2E] transition-colors flex 
+              items-center gap-1">
+              Open <ChevronRight size={10}/>
+            </a>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[
+              {
+                label: 'Done Today',
+                value: `${todayCompletions?.length || 0}/${
+                  dailyQuests?.length || 0}`,
+                color: '#7C3AED'
+              },
+              {
+                label: 'XP Today',
+                value: `+${(todayCompletions?.reduce((s, q) => 
+                  s + (q.xp_reward || 100), 0) || 0)}`,
+                color: '#E07B39'
+              },
+              {
+                label: 'Completion',
+                value: `${dailyQuests?.length
+                  ? Math.floor((todayCompletions?.length || 0) 
+                    / dailyQuests.length * 100)
+                  : 0}%`,
+                color: '#1A6B4A'
+              }
+            ].map((stat, i) => (
+              <div key={i} className="bg-[#F5F4F0] rounded-xl p-3 
+                text-center">
+                <p className="text-[9px] text-[#9A9590] 
+                  font-['Space_Mono'] uppercase tracking-wider mb-1">
+                  {stat.label}
+                </p>
+                <p className="text-sm font-bold font-['Space_Mono']"
+                  style={{ color: stat.color }}>
+                  {stat.value}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* STREAK SECTION */}
+      <div className="bg-[#1A1A2E] rounded-2xl p-6 text-white shadow-xl">
+        <p className="text-[10px] font-bold text-white/40 
+          font-['Space_Mono'] uppercase tracking-widest mb-4">
+          Current Streaks
+        </p>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+          {[
+            {
+              label: 'Overall Streak',
+              value: streakDays,
+              unit: 'days',
+              color: '#E07B39',
+              icon: Flame
+            },
+            {
+              label: 'Gym Days',
+              value: history?.filter(h => h.gym_done)?.length || 0,
+              unit: 'total',
+              color: '#1A6B4A',
+              icon: Heart
+            },
+            {
+              label: 'Problems Solved',
+              value: dsaSolved || 0,
+              unit: 'total',
+              color: '#9A9590',
+              icon: Code2
+            },
+            {
+              label: 'Total XP',
+              value: xp || 0,
+              unit: 'xp',
+              color: '#E07B39',
+              icon: Zap
+            }
+          ].map((s, i) => {
+            const Icon = s.icon;
+            return (
+              <div key={i}>
+                <div className="flex items-center gap-2 mb-1">
+                  <Icon size={13} style={{ color: s.color }}/>
+                  <p className="text-[9px] text-white/40 
+                    font-['Space_Mono'] uppercase tracking-wider">
+                    {s.label}
+                  </p>
+                </div>
+                <p className="text-2xl font-bold font-['Space_Mono']"
+                  style={{ color: s.color }}>
+                  {s.value.toLocaleString()}
+                  <span className="text-xs text-white/40 ml-1 
+                    font-normal">
+                    {s.unit}
+                  </span>
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+    </div>
+  );
+};
+
+export default Tracker;
+import React, { useState, useEffect, useMemo } from 'react';
+import { useCharacterStore } from '../store/characterStore';
+import { useXpStore } from '../store/xpStore';
+import { 
+  Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, ResponsiveContainer,
+  Area, AreaChart, CartesianGrid, Tooltip, XAxis, YAxis
+} from 'recharts';
+import { 
+  User, Flame, Zap, Award, Target, Brain, 
+  Clock, CheckCircle2, CircleDot, ChevronDown, 
+  ChevronUp, Star, Sword, Lock, Shield
+} from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { format, formatDistanceToNow } from 'date-fns';
+import { clsx } from 'clsx';
+
+const CharacterSheet = () => {
+  const { 
+    stats, badges, brainLogs, xpEvents, playerState, 
+    loading, loadCharacterData, recalculate, submitBrainLog 
+  } = useCharacterStore();
+
+  const { streakDays } = useXpStore();
+
+  const [isXpLogOpen, setIsXpLogOpen] = useState(false);
+  const [activeBadgeCategory, setActiveBadgeCategory] = useState('ALL');
+  const [brainForm, setBrainForm] = useState({
+    topic: '',
+    subject_area: 'DSA',
+    was_stuck_on: '',
+    minutes_pushed: 20,
+    solved: false,
+    what_clicked: '',
+    concept_unlocked: '',
+    difficulty: 3,
+    mood_before: 3,
+    mood_after: 3
+  });
+  const [submitFeedback, setSubmitFeedback] = useState(null);
+
+  useEffect(() => {
+    loadCharacterData();
+  }, []);
+
+  // === DERIVED XP DATA ===
+  const level = playerState?.level || 1;
+  const xp = playerState?.xp || 0;
+  const xpForCurrent = Math.pow((level - 1) * 10, 2);
+  const xpForNext = Math.pow(level * 10, 2);
+  const xpProgress = Math.max(0, xp - xpForCurrent);
+  const xpRequired = Math.max(1, xpForNext - xpForCurrent);
+  const xpPercent = Math.min(100, Math.floor((xpProgress / xpRequired) * 100));
+
+  // Radar chart data
+  const radarData = useMemo(() => [
+    { subject: 'DSA', A: stats.dsa, fullMark: 100 },
+    { subject: 'SysDesign', A: stats.sysdesign, fullMark: 100 },
+    { subject: 'Backend', A: stats.backend, fullMark: 100 },
+    { subject: 'Trading', A: stats.trading, fullMark: 100 },
+    { subject: 'Physique', A: stats.physique, fullMark: 100 },
+    { subject: 'Analytical', A: stats.analytical, fullMark: 100 },
+  ], [stats]);
+
+  const lineData = useMemo(() => {
+    return [...brainLogs].reverse().slice(-30).map(log => ({
+      date: format(new Date(log.logged_at), 'MM/dd'),
+      minutes: log.minutes_pushed
+    }));
+  }, [brainLogs]);
+
+  const handleBrainSubmit = async (e) => {
+    e.preventDefault();
+    const res = await submitBrainLog(brainForm);
+    if (res.success) {
+      setSubmitFeedback(res.data);
+      setBrainForm({
+        topic: '',
+        subject_area: 'DSA',
+        was_stuck_on: '',
+        minutes_pushed: 20,
+        solved: false,
+        what_clicked: '',
+        concept_unlocked: '',
+        difficulty: 3,
+        mood_before: 3,
+        mood_after: 3
+      });
+      setTimeout(() => setSubmitFeedback(null), 5000);
+    }
+  };
+
+  const badgeCategories = ['ALL', 'IDENTITY', 'SDE', 'TRADING', 'HEALTH', 'BRAIN', 'MONEY', 'KNOWLEDGE', 'EXAMS'];
+  const filteredBadges = activeBadgeCategory === 'ALL' 
+    ? badges 
+    : badges.filter(b => b.category?.toUpperCase() === activeBadgeCategory);
+
+  if (loading && !playerState) {
+    return (
+      <div className="flex-1 flex items-center justify-center min-h-screen bg-[#F5F4F0]">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 bg-[#1A1A2E] rounded-lg animate-pulse flex items-center justify-center">
+            <Zap className="w-4 h-4 text-[#E07B39]" />
+          </div>
+          <p className="text-[10px] font-bold text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest">
+            Syncing Identity...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6">
+      
+      {/* â”€â”€ PAGE HEADER â”€â”€ */}
+      <div className="mb-6">
+        <div className="flex items-center gap-2 mb-1">
+          <User size={14} className="text-[#E07B39]"/>
+          <p className="text-[10px] font-bold text-[#9A9590] 
+            font-['Space_Mono'] uppercase tracking-widest">
+            Character Sheet
+          </p>
+        </div>
+        <h1 className="text-2xl font-bold text-[#1A1A2E] 
+          font-['Inter'] tracking-tight">
+          Abhishek
+        </h1>
+        <div className="flex items-center gap-2 mt-2">
+          <span className="bg-[#1A1A2E] text-white 
+            font-['Space_Mono'] text-xs font-bold px-3 py-1 rounded-lg shadow-sm">
+            LVL {level}
+          </span>
+          {streakDays > 0 && (
+            <span className="bg-[#FFF0E6] text-[#E07B39] 
+              font-['Space_Mono'] text-xs font-bold px-3 py-1 
+              rounded-lg flex items-center gap-1 shadow-sm border border-[#E07B39]/10">
+              <Flame size={11}/> {streakDays} day streak
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="flex flex-col lg:flex-row gap-6 mb-6">
+        
+        {/* LEFT: Identity & Stats Bar */}
+        <div className="flex-1 space-y-6">
+          
+          {/* XP Progress Card */}
+          <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 shadow-sm">
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest mb-3">
+              XP Progress
+            </p>
+            <div className="flex items-end justify-between mb-2">
+              <p className="text-3xl font-bold text-[#1A1A2E] 
+                font-['Space_Mono']">
+                {xp?.toLocaleString()}
+              </p>
+              <p className="text-xs text-[#9A9590] font-['Space_Mono']">
+                LVL {level} â†’ {level + 1}
+              </p>
+            </div>
+            <div className="h-2 bg-[#F5F4F0] rounded-full overflow-hidden">
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${xpPercent}%` }}
+                transition={{ duration: 0.8, ease: 'easeOut' }}
+                className="h-full bg-[#E07B39] rounded-full"
+              />
+            </div>
+            <div className="flex justify-between items-center mt-2">
+              <p className="text-[10px] text-[#9A9590] font-['Inter']">
+                {xpRequired - xpProgress} XP to next level
+              </p>
+              <button 
+                onClick={recalculate}
+                className="text-[9px] font-bold text-[#1A1A2E] font-['Space_Mono'] uppercase tracking-wider hover:text-[#E07B39] transition-colors"
+              >
+                Sync Stats
+              </button>
+            </div>
+          </div>
+
+          {/* RPG Stats Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {[
+              { label: 'DSA', val: stats.dsa, color: '#1A1A2E' },
+              { label: 'SysDesign', val: stats.sysdesign, color: '#7C3AED' },
+              { label: 'Backend', val: stats.backend, color: '#E07B39' },
+              { label: 'Trading', val: stats.trading, color: '#E07B39' },
+              { label: 'Physique', val: stats.physique, color: '#1A6B4A' },
+              { label: 'Analytical', val: stats.analytical, color: '#C0392B' },
+            ].map((s) => (
+              <div key={s.label} className="bg-white rounded-2xl border border-[#E5E0D8] p-5 shadow-sm">
+                <div className="flex justify-between items-end mb-2">
+                  <p className="text-[10px] font-bold font-['Space_Mono'] 
+                    uppercase tracking-widest text-[#9A9590]">
+                    {s.label}
+                  </p>
+                  <p className="text-2xl font-bold font-['Space_Mono'] text-[#1A1A2E]">
+                    {s.val}
+                  </p>
+                </div>
+                <div className="h-2 bg-[#F5F4F0] rounded-full overflow-hidden">
+                  <motion.div 
+                    initial={{ width: 0 }}
+                    animate={{ width: `${s.val}%` }}
+                    className="h-full rounded-full"
+                    style={{ backgroundColor: s.color }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* RIGHT: Attribute Web */}
+        <div className="w-full lg:w-[400px]">
+          <div className="bg-white rounded-2xl border border-[#E5E0D8] p-6 shadow-sm h-full flex flex-col items-center">
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest mb-6 w-full">
+              Attribute Matrix
+            </p>
+            <div className="w-full h-[300px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <RadarChart cx="50%" cy="50%" outerRadius="80%" data={radarData}>
+                  <PolarGrid stroke="#E5E0D8" />
+                  <PolarAngleAxis dataKey="subject" tick={{ fill: '#9A9590', fontSize: 10, fontWeight: 500 }} />
+                  <Radar
+                    name="Stats"
+                    dataKey="A"
+                    stroke="#1A1A2E"
+                    strokeWidth={2}
+                    fill="#1A1A2E"
+                    fillOpacity={0.1}
+                    animationDuration={800}
+                  />
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="mt-auto pt-6 w-full border-t border-[#F5F4F0]">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Award size={14} className="text-[#E07B39]"/>
+                  <p className="text-[10px] font-bold text-[#1A1A2E] font-['Space_Mono'] uppercase tracking-wider">
+                    {badges.filter(b => b.earned).length} / {badges.length} Badges
+                  </p>
+                </div>
+                <p className="text-[10px] text-[#9A9590] font-['Inter']">
+                  Updated {playerState?.stats_last_updated ? formatDistanceToNow(new Date(playerState.stats_last_updated)) : 'recently'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* â”€â”€ SECTION: BRAIN LOGS â”€â”€ */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mb-6">
+        
+        {/* Brain Log Form */}
+        <div className="lg:col-span-5">
+          <div className="bg-white rounded-2xl border border-[#E5E0D8] p-6 shadow-sm border-l-4 border-l-[#7C3AED]">
+            <div className="mb-6">
+              <h3 className="text-[10px] font-bold text-[#1A1A2E] font-['Space_Mono'] uppercase tracking-widest">
+                Log Thinking Session
+              </h3>
+              <p className="text-[11px] text-[#9A9590] mt-1">Record deep work and breakthroughs.</p>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="text-[9px] font-bold text-[#9A9590] uppercase font-['Space_Mono'] tracking-wider mb-1 block">Topic</label>
+                <input 
+                  type="text"
+                  placeholder="What were you working on?"
+                  className="w-full bg-[#F5F4F0] border-transparent focus:border-[#7C3AED] border rounded-xl px-4 py-2.5 text-sm outline-none transition-all"
+                  value={brainForm.topic}
+                  onChange={e => setBrainForm({...brainForm, topic: e.target.value})}
+                />
+              </div>
+
+              <div>
+                <label className="text-[9px] font-bold text-[#9A9590] uppercase font-['Space_Mono'] tracking-wider mb-1 block">Subject</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {['DSA', 'SysDesign', 'Backend', 'Trading', 'Exams'].map(area => (
+                    <button
+                      key={area}
+                      type="button"
+                      onClick={() => setBrainForm({...brainForm, subject_area: area})}
+                      className={clsx(
+                        "px-3 py-1 rounded-lg text-[10px] font-bold tracking-wider uppercase transition-all",
+                        brainForm.subject_area === area ? "bg-[#1A1A2E] text-white" : "bg-[#F5F4F0] text-[#9A9590] hover:bg-[#E5E0D8]"
+                      )}
+                    >
+                      {area}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[9px] font-bold text-[#9A9590] uppercase font-['Space_Mono'] tracking-wider mb-1 block">Minutes</label>
+                  <input 
+                    type="number"
+                    className="w-full bg-[#F5F4F0] border-transparent focus:border-[#7C3AED] border rounded-xl px-4 py-2 text-sm outline-none transition-all"
+                    value={brainForm.minutes_pushed}
+                    onChange={e => setBrainForm({...brainForm, minutes_pushed: parseInt(e.target.value)})}
+                  />
+                </div>
+                <div>
+                  <label className="text-[9px] font-bold text-[#9A9590] uppercase font-['Space_Mono'] tracking-wider mb-1 block">Solved?</label>
+                  <button 
+                    type="button"
+                    onClick={() => setBrainForm({...brainForm, solved: !brainForm.solved})}
+                    className={clsx(
+                      "w-full py-2 rounded-xl text-[10px] font-bold uppercase transition-all border",
+                      brainForm.solved ? "bg-[#1A6B4A] text-white border-[#1A6B4A]" : "bg-white text-[#9A9590] border-[#E5E0D8]"
+                    )}
+                  >
+                    {brainForm.solved ? 'YES' : 'NO'}
+                  </button>
+                </div>
+              </div>
+
+              <button 
+                onClick={handleBrainSubmit}
+                className="w-full bg-[#1A1A2E] text-white py-3 rounded-xl font-bold font-['Space_Mono'] uppercase tracking-widest text-xs hover:bg-[#2a2a4e] transition-all shadow-md flex items-center justify-center gap-2"
+              >
+                <Brain size={14} className="text-[#E07B39]"/>
+                Log Session +20 XP
+              </button>
+            </div>
+
+            <AnimatePresence>
+              {submitFeedback && (
+                <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} className="mt-4 p-3 bg-[#F0FDF4] border-l-4 border-l-[#1A6B4A] rounded-r-xl">
+                  <p className="text-[11px] font-bold text-[#1A6B4A]">
+                    Session logged. Neural pathways strengthened.
+                  </p>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+
+        {/* Brain Log History */}
+        <div className="lg:col-span-7 space-y-4">
+          <p className="text-[10px] font-bold text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest">
+            Recent Thinking Sessions
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {brainLogs.slice(0, 4).map((log, i) => (
+              <motion.div 
+                key={i}
+                initial={{ opacity: 0, x: 10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: i * 0.05 }}
+                className="bg-white rounded-2xl border border-[#E5E0D8] p-4 border-l-4 border-l-[#E07B39] shadow-sm"
+              >
+                <div className="flex justify-between items-start mb-2">
+                  <p className="text-sm text-[#1A1A2E] font-bold font-['Inter'] leading-relaxed truncate pr-2">
+                    {log.topic}
+                  </p>
+                  <span className="px-2 py-0.5 bg-[#F5F4F0] text-[#9A9590] text-[9px] font-bold uppercase rounded">
+                    {log.subject_area}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <p className="text-[9px] text-[#9A9590] font-['Space_Mono'] uppercase tracking-wider">
+                    {format(new Date(log.logged_at), 'MMM d, yyyy Â· HH:mm')}
+                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <Clock size={10} className="text-[#9A9590]"/>
+                    <span className="text-[10px] font-bold text-[#1A1A2E] font-['Space_Mono']">{log.minutes_pushed}m</span>
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+          <Card className="p-8 mt-4 h-[180px]">
+             <div className="w-full h-full">
+               <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={lineData}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F5F4F0" />
+                    <XAxis dataKey="date" hide />
+                    <Tooltip 
+                      contentStyle={{ backgroundColor: '#1A1A2E', border: 'none', borderRadius: '12px', color: '#fff', fontSize: '10px' }}
+                    />
+                    <Area type="monotone" dataKey="minutes" stroke="#7C3AED" strokeWidth={2} fill="#7C3AED" fillOpacity={0.05} />
+                  </AreaChart>
+               </ResponsiveContainer>
+             </div>
+          </Card>
+        </div>
+      </div>
+
+      {/* â”€â”€ SECTION: ACHIEVEMENTS â”€â”€ */}
+      <div className="space-y-4 mb-6">
+        <div className="flex items-center justify-between">
+          <p className="text-[10px] font-bold text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest">
+            Achievements
+          </p>
+          <div className="flex gap-2 overflow-x-auto no-scrollbar max-w-[60%]">
+            {badgeCategories.map(cat => (
+              <button
+                key={cat}
+                onClick={() => setActiveBadgeCategory(cat)}
+                className={clsx(
+                  "px-3 py-1 rounded-lg text-[9px] font-bold tracking-wider uppercase transition-all whitespace-nowrap border",
+                  activeBadgeCategory === cat ? "bg-[#1A1A2E] text-white border-[#1A1A2E]" : "bg-white text-[#9A9590] border-[#E5E0D8]"
+                )}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+          {filteredBadges.map((badge) => {
+            const isEarned = badge.earned;
+            return (
+              <div 
+                key={badge.badge_key}
+                className={clsx(
+                  "bg-white rounded-2xl border p-4 flex flex-col items-center text-center transition-all group relative",
+                  isEarned ? "border-[#1A1A2E] shadow-sm" : "border-[#E5E0D8] opacity-40 grayscale"
+                )}
+              >
+                <div className="text-3xl mb-2 grayscale-0">{badge.icon}</div>
+                <h4 className="text-xs font-bold font-['Inter'] text-[#1A1A2E] mb-1">
+                  {badge.title}
+                </h4>
+                <p className="text-[10px] font-['Inter'] text-[#9A9590] leading-tight line-clamp-2">
+                  {badge.description}
+                </p>
+                
+                {isEarned ? (
+                  <div className="absolute top-2 right-2">
+                    <CheckCircle2 size={12} className="text-[#1A6B4A]"/>
+                  </div>
+                ) : (
+                  <div className="absolute top-2 right-2">
+                    <Lock size={12} className="text-[#9A9590]"/>
+                  </div>
+                )}
+                
+                {/* Unlock condition on hover for locked ones */}
+                {!isEarned && (
+                  <div className="absolute inset-0 bg-[#1A1A2E]/95 rounded-2xl flex items-center justify-center p-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                    <p className="text-[9px] font-bold text-white uppercase tracking-tighter text-center">
+                      {badge.unlock_condition}
+                    </p>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* â”€â”€ SECTION: XP LOG â”€â”€ */}
+      <div className="pt-6 border-t border-[#E5E0D8]">
+        <button 
+          onClick={() => setIsXpLogOpen(!isXpLogOpen)}
+          className="flex items-center gap-3 font-bold text-sm text-[#1A1A2E] font-['Space_Mono'] uppercase tracking-widest group"
+        >
+          Activity Log
+          {isXpLogOpen ? <ChevronUp size={14} className="group-hover:-translate-y-0.5 transition-transform" /> : <ChevronDown size={14} className="group-hover:translate-y-0.5 transition-transform" />}
+        </button>
+
+        <AnimatePresence>
+          {isXpLogOpen && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0 }} 
+              animate={{ height: 'auto', opacity: 1 }} 
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden mt-4"
+            >
+              <div className="bg-white rounded-2xl border border-[#E5E0D8] divide-y divide-[#F5F4F0]">
+                {xpEvents.slice(0, 10).map((log, i) => (
+                  <div key={i} className="flex items-center justify-between p-4 hover:bg-[#F5F4F0] transition-all">
+                    <div className="flex items-center gap-4">
+                      <span className="font-mono text-[10px] text-[#9A9590] w-12">{format(new Date(log.created_at), 'MM/dd')}</span>
+                      <span className="font-body text-[13px] text-[#1A1A2E] font-medium">{log.source || log.reason}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {log.multiplier > 1 && <span className="px-2 py-0.5 bg-[#FFF0E6] text-[#E07B39] rounded font-mono text-[9px] font-bold">Ã—{log.multiplier}</span>}
+                      <span className="font-mono text-[13px] font-bold text-[#1A6B4A]">+{log.final_amount || log.amount} XP</span>
+                    </div>
+                  </div>
+                ))}
+                <div className="p-4 text-center">
+                   <p className="text-[10px] font-bold text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest">
+                     Lifetime Earnings: {playerState?.total_xp_alltime?.toLocaleString()} XP
+                   </p>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+    </div>
+  );
+};
+
+export default CharacterSheet;
+import React, { useEffect } from 'react';
+import { usePomodoroStore } from '../store/pomodoroStore';
+import { motion } from 'framer-motion';
+import { clsx } from 'clsx';
+import {
+  Timer, RotateCcw, ChevronRight, Zap, Coffee,
+  Play, Pause, Settings, Trophy, Target
+} from 'lucide-react';
+
+const Pomodoro = () => {
+  const {
+    timers,
+    statsToday,
+    startTimer,
+    pauseTimer,
+    resetTimer,
+    skipPhase,
+    addTimer,
+    removeTimer,
+    tick
+  } = usePomodoroStore();
+
+  // Primary timer is the first one in the list
+  const activeTimer = timers[0];
+  const isRunning = activeTimer?.isRunning || false;
+  const isFocusMode = activeTimer ? !activeTimer.isBreak : true;
+  const timeLeft = activeTimer?.timeLeft || 25 * 60;
+  const sessionsCompleted = statsToday?.completedCount || 0;
+  
+  // Progress calculation
+  const totalDuration = activeTimer 
+    ? (activeTimer.isBreak ? activeTimer.breakDuration : activeTimer.duration) 
+    : 25 * 60;
+  const progress = timeLeft / totalDuration;
+
+  // Mode from store is usually 'pomodoro'
+  const currentMode = activeTimer?.modeId || 'pomodoro';
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      tick();
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [tick]);
+
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  };
+
+  const handleStartPause = () => {
+    if (!activeTimer) {
+      addTimer('pomodoro');
+      return;
+    }
+    if (isRunning) {
+      pauseTimer(activeTimer.id);
+    } else {
+      startTimer(activeTimer.id);
+    }
+  };
+
+  const handleReset = () => {
+    if (activeTimer) resetTimer(activeTimer.id);
+  };
+
+  const handleSkip = () => {
+    if (activeTimer) skipPhase(activeTimer.id);
+  };
+
+  const handleSetMode = (modeId) => {
+    if (activeTimer) {
+      removeTimer(activeTimer.id);
+    }
+    addTimer(modeId);
+  };
+
+  return (
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6">
+      <div className="max-w-lg mx-auto">
+        
+        {/* â”€â”€ PAGE HEADER â”€â”€ */}
+        <div className="mb-8 text-center">
+          <div className="flex items-center justify-center gap-2 mb-2">
+            <Timer size={14} className="text-[#E07B39]"/>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              Focus Engine
+            </p>
+          </div>
+          <h1 className="text-2xl font-bold text-[#1A1A2E] 
+            font-['Inter'] tracking-tight">
+            Pomodoro
+          </h1>
+        </div>
+
+        {/* â”€â”€ TIMER DISPLAY â”€â”€ */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-8 mb-6 shadow-sm flex flex-col items-center justify-center">
+          
+          {/* Mode indicator */}
+          <div className={clsx(
+            'text-[10px] font-bold font-["Space_Mono"] uppercase',
+            'tracking-widest mb-6 px-4 py-1.5 rounded-full shadow-sm',
+            isFocusMode
+              ? 'bg-[#1A1A2E] text-white'
+              : 'bg-[#F0FDF4] text-[#1A6B4A]'
+          )}>
+            {isFocusMode ? 'âš¡ Focus Session' : 'â˜• Break Time'}
+          </div>
+
+          {/* Timer ring */}
+          <div className="relative w-56 h-56 mb-8">
+            <svg className="w-full h-full transform -rotate-90" 
+              viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="45" fill="none"
+                stroke="#F5F4F0" strokeWidth="4"/>
+              <motion.circle
+                cx="50" cy="50" r="45" fill="none"
+                stroke={isFocusMode ? '#1A1A2E' : '#1A6B4A'}
+                strokeWidth="4"
+                strokeLinecap="round"
+                strokeDasharray={`${2 * Math.PI * 45}`}
+                animate={{
+                  strokeDashoffset: 2 * Math.PI * 45 * (1 - progress)
+                }}
+                transition={{ duration: 0.5 }}
+              />
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center 
+              justify-center">
+              <p className="text-5xl font-bold text-[#1A1A2E] 
+                font-['Space_Mono'] tabular-nums tracking-tighter">
+                {formatTime(timeLeft)}
+              </p>
+              <p className="text-[10px] text-[#9A9590] font-['Space_Mono']
+                uppercase tracking-widest mt-1">
+                {isFocusMode ? 'remaining' : 'break'}
+              </p>
+            </div>
+          </div>
+
+          {/* Controls */}
+          <div className="flex items-center gap-4">
+            <button
+              onClick={handleReset}
+              title="Reset Timer"
+              className="p-3.5 rounded-2xl bg-[#F5F4F0] text-[#9A9590] 
+                hover:text-[#1A1A2E] hover:shadow-md transition-all border border-transparent hover:border-[#E5E0D8]"
+            >
+              <RotateCcw size={20}/>
+            </button>
+            <button
+              onClick={handleStartPause}
+              className={clsx(
+                'px-10 py-4 rounded-2xl text-sm font-bold',
+                'font-["Space_Mono"] uppercase tracking-wider',
+                'transition-all shadow-lg transform hover:scale-[1.02] active:scale-95',
+                isRunning
+                  ? 'bg-[#C0392B] text-white hover:bg-[#A93226]'
+                  : 'bg-[#1A1A2E] text-white hover:bg-[#2a2a4e]'
+              )}
+            >
+              {isRunning ? 'Pause' : 'Start'}
+            </button>
+            <button
+              onClick={handleSkip}
+              title="Skip Phase"
+              className="p-3.5 rounded-2xl bg-[#F5F4F0] text-[#9A9590] 
+                hover:text-[#1A1A2E] hover:shadow-md transition-all border border-transparent hover:border-[#E5E0D8]"
+            >
+              <ChevronRight size={20}/>
+            </button>
+          </div>
+        </div>
+
+        {/* â”€â”€ SESSION TYPE SELECTOR â”€â”€ */}
+        <div className="flex items-center gap-1.5 bg-white rounded-2xl 
+          border border-[#E5E0D8] p-1.5 w-fit mx-auto mb-8 shadow-sm">
+          {[
+            { id: 'pomodoro', label: 'Pomodoro', duration: 25 },
+            { id: 'deep_work', label: 'Deep Work', duration: 45 },
+            { id: 'flow', label: 'Flow', duration: 60 }
+          ].map(option => (
+            <button
+              key={option.id}
+              onClick={() => handleSetMode(option.id)}
+              className={clsx(
+                'px-4 py-2 rounded-xl text-[10px] font-bold',
+                'font-["Space_Mono"] uppercase tracking-wider transition-all',
+                currentMode === option.id
+                  ? 'bg-[#1A1A2E] text-white shadow-sm'
+                  : 'text-[#9A9590] hover:text-[#1A1A2E] hover:bg-[#F5F4F0]'
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+
+        {/* â”€â”€ SESSIONS COMPLETED ROW â”€â”€ */}
+        <div className="flex items-center justify-center gap-4 mb-8">
+          <p className="text-[10px] text-[#9A9590] font-['Space_Mono']
+            uppercase tracking-widest">
+            Sessions Completed:
+          </p>
+          <div className="flex gap-2">
+            {Array.from({ length: Math.max(4, sessionsCompleted) })
+              .map((_, i) => (
+              <motion.div 
+                key={i} 
+                initial={false}
+                animate={{ scale: i < sessionsCompleted ? [1, 1.2, 1] : 1 }}
+                className={clsx(
+                  'w-3.5 h-3.5 rounded-full transition-all duration-500',
+                  i < sessionsCompleted
+                    ? 'bg-[#1A1A2E] shadow-sm'
+                    : 'bg-[#E5E0D8]'
+                )}
+              />
+            ))}
+          </div>
+          <p className="text-base font-bold text-[#1A1A2E] 
+            font-['Space_Mono']">
+            {sessionsCompleted}
+          </p>
+        </div>
+
+        {/* â”€â”€ FOCUS TIPS CARD â”€â”€ */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] 
+          p-6 shadow-sm border-t-4 border-t-[#E07B39]">
+          <p className="text-[10px] font-bold text-[#9A9590] 
+            font-['Space_Mono'] uppercase tracking-widest mb-4">
+            Protocol for Focus Sessions
+          </p>
+          <div className="flex flex-col gap-3">
+            {[
+              'Phone face down, all notifications silenced',
+              'Single task focus â€” decide it before starting',
+              'If distracted, capture the thought and refocus',
+              'Stay hydrated â€” keep water on your desk'
+            ].map((tip, i) => (
+              <div key={i} className="flex gap-3 items-start">
+                <div className="w-1.5 h-1.5 rounded-full bg-[#E07B39] 
+                  shrink-0 mt-1.5 shadow-sm"/>
+                <p className="text-xs text-[#3D3830] font-['Inter'] 
+                  leading-relaxed font-medium">
+                  {tip}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Pomodoro;
+import React from 'react';
+import { useSettingsStore } from '../store/settingsStore';
+import { motion } from 'framer-motion';
+import { clsx } from 'clsx';
+import {
+  Settings as SettingsIcon, User, Palette, GraduationCap, 
+  TrendingUp, Clock, Volume2, AlertCircle, Save,
+  Monitor, Type, Target, Calendar, Award
+} from 'lucide-react';
+
+const Settings = () => {
+  const { settings, updateSetting, resetData, saving } = useSettingsStore();
+
+  const handleReset = async () => {
+    if (window.confirm('CRITICAL: This will wipe all progress data (quests, trades, logs). This cannot be undone. Proceed?')) {
+      await resetData();
+      window.location.reload();
+    }
+  };
+
+  const SettingRow = ({ label, description, children, border = true }) => (
+    <div className={clsx(
+      "flex items-center justify-between py-4",
+      border && "border-b border-[#F5F4F0]"
+    )}>
+      <div className="pr-4">
+        <p className="text-sm font-bold text-[#1A1A2E] font-['Inter']">
+          {label}
+        </p>
+        <p className="text-[10px] text-[#9A9590] font-['Inter'] mt-0.5 max-w-[240px]">
+          {description}
+        </p>
+      </div>
+      <div className="shrink-0">
+        {children}
+      </div>
+    </div>
+  );
+
+  const Toggle = ({ value, onToggle }) => (
+    <button
+      onClick={onToggle}
+      className={clsx(
+        'w-11 h-6 rounded-full relative transition-all shrink-0 shadow-inner',
+        value ? 'bg-[#1A1A2E]' : 'bg-[#E5E0D8]'
+      )}
+    >
+      <div className={clsx(
+        'absolute top-1 w-4 h-4 rounded-full bg-white',
+        'transition-all duration-200 shadow-sm',
+        value ? 'left-6' : 'left-1'
+      )}/>
+    </button>
+  );
+
+  const Input = ({ type = 'text', value, onChange, placeholder, width = 'w-32' }) => (
+    <input
+      type={type}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      placeholder={placeholder}
+      className={clsx(
+        "bg-[#F5F4F0] border border-transparent focus:border-[#E07B39]",
+        "rounded-xl px-4 py-2 text-sm font-['Space_Mono'] text-[#1A1A2E]",
+        "focus:outline-none transition-all text-right",
+        width
+      )}
+    />
+  );
+
+  const Select = ({ value, options, onChange }) => (
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      className="bg-[#F5F4F0] border border-transparent focus:border-[#E07B39] 
+        rounded-xl px-4 py-2 text-xs font-['Space_Mono'] text-[#1A1A2E] 
+        focus:outline-none transition-all cursor-pointer appearance-none text-right min-w-[140px]"
+    >
+      {options.map(opt => (
+        <option key={opt} value={opt}>{opt}</option>
+      ))}
+    </select>
+  );
+
+  return (
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-12">
+      <div className="max-w-2xl mx-auto">
+        
+        {/* â”€â”€ PAGE HEADER â”€â”€ */}
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-1">
+            <SettingsIcon size={14} className="text-[#E07B39]"/>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              Configuration
+            </p>
+          </div>
+          <h1 className="text-2xl font-bold text-[#1A1A2E] 
+            font-['Inter'] tracking-tight">
+            Settings
+          </h1>
+        </div>
+
+        {/* â”€â”€ IDENTITY â”€â”€ */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 mb-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-6">
+            <User size={14} className="text-[#1A1A2E]"/>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              Identity
+            </p>
+          </div>
+          <SettingRow 
+            label="Player Name" 
+            description="How you're addressed throughout the system."
+            border={false}
+          >
+            <Input 
+              value={settings.name} 
+              onChange={v => updateSetting('name', v)}
+              width="w-40"
+            />
+          </SettingRow>
+        </div>
+
+        {/* â”€â”€ APPEARANCE â”€â”€ */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 mb-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-6">
+            <Palette size={14} className="text-[#7C3AED]"/>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              Appearance
+            </p>
+          </div>
+          <SettingRow 
+            label="System Theme" 
+            description="Switch between different UI color palettes."
+          >
+            <Select 
+              value={settings.theme}
+              options={['LIGHT PROFESSIONAL', 'DARK WAR ROOM', 'MIDNIGHT BLUE', 'PAPER']}
+              onChange={v => updateSetting('theme', v)}
+            />
+          </SettingRow>
+          <SettingRow 
+            label="Interface Scale" 
+            description="Adjust text size for better readability."
+            border={false}
+          >
+            <Select 
+              value={settings.fontSize}
+              options={['Small', 'Default', 'Large']}
+              onChange={v => updateSetting('fontSize', v)}
+            />
+          </SettingRow>
+        </div>
+
+        {/* â”€â”€ ACADEMIC & SDE â”€â”€ */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 mb-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-6">
+            <GraduationCap size={14} className="text-[#1A6B4A]"/>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              Academic & SDE
+            </p>
+          </div>
+          <SettingRow 
+            label="Current Semester" 
+            description="Sets the active semester for your exam tracker."
+          >
+            <Input 
+              type="number"
+              value={settings.current_semester}
+              onChange={v => updateSetting('current_semester', parseInt(v))}
+              width="w-24"
+            />
+          </SettingRow>
+          <SettingRow 
+            label="Next Big Exam" 
+            description="Target date for your upcoming major examination."
+          >
+            <Input 
+              type="date"
+              value={settings.exam_date}
+              onChange={v => updateSetting('exam_date', v)}
+              width="w-40"
+            />
+          </SettingRow>
+          <SettingRow 
+            label="LeetCode Problems" 
+            description="Sync your DSA progress to your character sheet."
+            border={false}
+          >
+            <Input 
+              type="number"
+              value={settings.lc_problems_solved}
+              onChange={v => updateSetting('lc_problems_solved', parseInt(v))}
+              width="w-24"
+            />
+          </SettingRow>
+        </div>
+
+        {/* â”€â”€ TRADING â”€â”€ */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 mb-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-6">
+            <TrendingUp size={14} className="text-[#E07B39]"/>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              Trading
+            </p>
+          </div>
+          <SettingRow 
+            label="Monthly Target" 
+            description="Your target profit in INR for the current month."
+          >
+            <div className="flex items-center gap-2 bg-[#F5F4F0] px-4 py-2 rounded-xl">
+              <span className="text-xs font-bold text-[#9A9590]">â‚¹</span>
+              <input 
+                type="number"
+                value={settings.monthly_target_inr}
+                onChange={e => updateSetting('monthly_target_inr', parseInt(e.target.value))}
+                className="bg-transparent border-none text-sm font-['Space_Mono'] text-[#1A1A2E] outline-none text-right w-24"
+              />
+            </div>
+          </SettingRow>
+          <SettingRow 
+            label="Prop Firm Funded" 
+            description="Awards the 'Funded' badge and +1000 XP on activation."
+            border={false}
+          >
+            <Toggle 
+              value={settings.prop_firm_passed}
+              onToggle={() => updateSetting('prop_firm_passed', !settings.prop_firm_passed)}
+            />
+          </SettingRow>
+        </div>
+
+        {/* â”€â”€ SCHEDULE â”€â”€ */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 mb-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-6">
+            <Clock size={14} className="text-[#9A9590]"/>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              System Schedule
+            </p>
+          </div>
+          <SettingRow 
+            label="Morning Briefing" 
+            description="When JARVIS generates your daily mission plan."
+          >
+            <Input 
+              type="time"
+              value={settings.morning_brief_time}
+              onChange={v => updateSetting('morning_brief_time', v)}
+              width="w-32"
+            />
+          </SettingRow>
+          <SettingRow 
+            label="Evening Review" 
+            description="Time to finalize logs and review performance."
+            border={false}
+          >
+            <Input 
+              type="time"
+              value={settings.evening_review_time}
+              onChange={v => updateSetting('evening_review_time', v)}
+              width="w-32"
+            />
+          </SettingRow>
+        </div>
+
+        {/* â”€â”€ ACCESSIBILITY â”€â”€ */}
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 mb-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-6">
+            <Volume2 size={14} className="text-[#1A1A2E]"/>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              System Audio
+            </p>
+          </div>
+          <SettingRow 
+            label="Voice Feedback" 
+            description="Enable audio alerts and briefing narration."
+            border={false}
+          >
+            <Toggle 
+              value={settings.voice_enabled}
+              onToggle={() => updateSetting('voice_enabled', !settings.voice_enabled)}
+            />
+          </SettingRow>
+        </div>
+
+        {/* â”€â”€ DANGER ZONE â”€â”€ */}
+        <div className="bg-white rounded-2xl border border-[#C0392B]/20 
+          p-5 mb-12 shadow-sm">
+          <div className="flex items-center gap-2 mb-6">
+            <AlertCircle size={14} className="text-[#C0392B]"/>
+            <p className="text-[10px] font-bold text-[#C0392B] 
+              font-['Space_Mono'] uppercase tracking-widest">
+              Danger Zone
+            </p>
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-bold text-[#1A1A2E] 
+                font-['Inter']">
+                Reset All Progress
+              </p>
+              <p className="text-[10px] text-[#9A9590] font-['Inter'] mt-0.5">
+                Clears all trades, health logs, and missions.
+              </p>
+            </div>
+            <button
+              onClick={handleReset}
+              className="px-6 py-2.5 bg-[#C0392B] text-white rounded-xl 
+                text-xs font-bold font-['Space_Mono'] uppercase 
+                tracking-wider hover:bg-[#A93226] transition-all shadow-md"
+            >
+              Reset
+            </button>
+          </div>
+        </div>
+
+        {/* â”€â”€ APP FOOTER â”€â”€ */}
+        <div className="text-center">
+          <p className="text-[9px] text-[#9A9590] font-['Space_Mono'] 
+            uppercase tracking-[0.3em]">
+            PLAYER ONE Â· v1.0 Â· System by Abhishek
+          </p>
+        </div>
+
+      </div>
+      
+      {/* â”€â”€ SAVING INDICATOR â”€â”€ */}
+      <AnimatePresence>
+        {saving && (
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-6 right-6 bg-[#1A1A2E] text-white px-6 py-3 rounded-2xl shadow-2xl flex items-center gap-3 z-50 border border-white/10"
+          >
+            <div className="w-2 h-2 bg-[#E07B39] rounded-full animate-ping" />
+            <span className="text-[10px] font-bold font-['Space_Mono'] uppercase tracking-widest">
+              Saving to Neural Net...
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+export default Settings;

@@ -11,8 +11,10 @@ export const useTradingStore = create((set, get) => ({
   moneyEntries: [],
   withdrawals: [],
   loading: false,
+  lastLoaded: null,
 
   loadTradingData: async () => {
+    if (get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
     set({ loading: true });
     try {
       await seedTradingSystem();
@@ -31,7 +33,8 @@ export const useTradingStore = create((set, get) => ({
         journalEntries: journalRes.data || [],
         moneyEntries: moneyRes.data || [],
         withdrawals: withRes.data || [],
-        loading: false 
+        loading: false,
+        lastLoaded: Date.now()
       });
     } catch (err) {
       console.error('Failed to load trading data:', err);

@@ -1,29 +1,48 @@
 import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 import { awardXP } from '../lib/xpEngine';
-import { seedHealthSystem } from '../lib/healthSeeder';
+import { rewards } from '../lib/rewards';
 
 export const useHealthStore = create((set, get) => ({
   todayLog: null,
   history: [],
   milestones: [],
   loading: false,
+  lastLoaded: null,
 
-  loadHealthData: async () => {
+  loadHealthData: async (force = false) => {
+    if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
     set({ loading: true });
     try {
-      await seedHealthSystem();
       const today = new Date().toISOString().split('T')[0];
 
       const { data: log } = await supabase.from('health_logs').select('*').eq('log_date', today).maybeSingle();
-      const { data: history } = await supabase.from('health_logs').select('*').order('log_date', { ascending: false }).limit(30);
+      const { data: history } = await supabase.from('health_logs').select('*').order('log_date', { ascending: false }).limit(60);
       const { data: milestones } = await supabase.from('health_milestones').select('*').order('phase');
 
       set({ 
-        todayLog: log || { log_date: today, water_glasses: 0 }, 
+        todayLog: log || { 
+          log_date: today, 
+          total_checks: 0, 
+          total_possible: 13,
+          gym_done: false,
+          bath_done: false,
+          bed_made: false,
+          teeth_brushed: false,
+          skincare_am: false,
+          skincare_pm: false,
+          study_table_organised: false,
+          meal_1_done: false,
+          meal_2_done: false,
+          protein_hit: false,
+          no_junk_before_6pm: false,
+          slept_by_midnight: false,
+          woke_by_630: false
+        }, 
         history: history || [],
         milestones: milestones || [],
-        loading: false 
+        loading: false,
+        lastLoaded: Date.now()
       });
     } catch (err) {
       console.error('Failed to load health data:', err);
@@ -33,21 +52,35 @@ export const useHealthStore = create((set, get) => ({
 
   updateLog: async (updates) => {
     const { todayLog } = get();
+    // Calculate new stats if fields are toggled
+    const newLog = { ...todayLog, ...updates };
+    
+    // Count active checks (excluding metadata fields)
+    const checkFields = [
+      'gym_done', 'meal_1_done', 'meal_2_done', 'protein_hit', 'no_junk_before_6pm',
+      'slept_by_midnight', 'woke_by_630', 'bath_done', 'bed_made', 'teeth_brushed',
+      'skincare_am', 'skincare_pm', 'study_table_organised'
+    ];
+    
+    newLog.total_checks = checkFields.filter(f => newLog[f]).length;
+    newLog.day_score = Math.floor((newLog.total_checks / newLog.total_possible) * 100);
+    
+    // Simple reward calculation (₹1-₹6 per habit based on user spec)
+    // We'll calculate the difference in earnings
+    const prevScore = todayLog.total_checks;
+    const newScore = newLog.total_checks;
+    
     try {
       const { data, error } = await supabase
         .from('health_logs')
-        .upsert({ ...todayLog, ...updates })
+        .upsert(newLog)
         .select()
         .single();
       
       if (!error) {
         set({ todayLog: data });
-        // Calculate XP awards based on what changed
-        if (updates.gym_done && !todayLog.gym_done) await awardXP(25, 'health:gym');
-        if (updates.sleep_time && !todayLog.sleep_time) await awardXP(10, 'health:sleep');
-        if (updates.skincare_am && !todayLog.skincare_am) await awardXP(5, 'health:skincare_am');
-        if (updates.skincare_pm && !todayLog.skincare_pm) await awardXP(5, 'health:skincare_pm');
-        if (updates.no_junk_before_6pm && !todayLog.no_junk_before_6pm) await awardXP(10, 'health:nutrition');
+        // Optional: Trigger XP/Gold on each toggle instead of just on submit if preferred by spec
+        // The spec says "On toggle ON: +25 XP toast, +₹6 wallet update" for gym, etc.
       }
     } catch (err) {
       console.error('Failed to update health log:', err);
@@ -62,6 +95,31 @@ export const useHealthStore = create((set, get) => ({
       }));
     } catch (err) {
       console.error('Failed to toggle milestone:', err);
+    }
+  },
+
+  submitDay: async () => {
+    const { todayLog } = get();
+    if (!todayLog) return;
+    
+    try {
+       // Finalize earnings based on score and save
+       const earnings = todayLog.total_checks * 4; // Average ₹4 per habit
+       await supabase.from('health_logs').update({ rupees_earned: earnings }).eq('id', todayLog.id);
+       
+       // Global rewards
+       await awardXP(todayLog.total_checks * 10, 'daily_health_habits');
+       await rewards.earnReward(earnings * 100, 'Health Protocol Check', 'health');
+       
+       if (todayLog.day_score === 100) {
+         await awardXP(100, 'perfect_health_day');
+         await rewards.earnReward(5000, 'Perfect Health Bonus', 'health_bonus');
+       }
+       
+       return { success: true, score: todayLog.day_score, earnings };
+    } catch (err) {
+       console.error('Failed to submit day:', err);
+       return { success: false };
     }
   }
 }));

@@ -1,6 +1,6 @@
 import React from 'react';
 import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Target, Swords, User, Settings } from 'lucide-react';
+import { LayoutDashboard, Target, Swords, User, Settings, GraduationCap } from 'lucide-react';
 import { clsx } from 'clsx';
 
 const BottomNav = () => {
@@ -9,7 +9,7 @@ const BottomNav = () => {
     { path: '/tracker', icon: Target, label: 'Tracker' },
     { path: '/quests', icon: Swords, label: 'Quests' },
     { path: '/character', icon: User, label: 'Stats' },
-    { path: '/settings', icon: Settings, label: 'Menu' },
+    { path: '/ai-track', icon: GraduationCap, label: 'AI Track' },
   ];
 
   return (

@@ -9,8 +9,10 @@ export const useWalletStore = create((set, get) => ({
   canWithdraw: false,
   withdrawReason: '',
   loading: false,
+  lastLoaded: null,
 
-  loadWallet: async () => {
+  loadWallet: async (force = false) => {
+    if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
     set({ loading: true });
     try {
       const { data: wallet } = await supabase.from('wallet').select('*').limit(1).single();
@@ -36,7 +38,8 @@ export const useWalletStore = create((set, get) => ({
           monthlyTargets: targets || [],
           canWithdraw: withdrawCheck.allowed,
           withdrawReason: withdrawCheck.reason || '',
-          loading: false 
+          loading: false,
+          lastLoaded: Date.now()
         });
       } else {
         set({ loading: false });

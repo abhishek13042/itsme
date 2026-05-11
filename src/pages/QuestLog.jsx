@@ -1,580 +1,687 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useQuestStore } from '../store/questStore';
-import { supabase } from '../lib/supabase';
-import Card from '../components/Card';
-import Badge from '../components/Badge';
-import Button from '../components/Button';
-import ProgressBar from '../components/ProgressBar';
-import { 
-  Plus, 
-  Sword, 
-  CheckCircle2, 
-  Clock, 
-  Dna, 
-  TrendingUp, 
-  Activity, 
-  AlertCircle,
-  Trophy,
-  Filter,
-  ArrowUpDown,
-  X
-} from 'lucide-react';
+import { useXpStore } from '../store/xpStore';
+import { useHealthStore } from '../store/healthStore';
+import { useSdeStore } from '../store/sdeStore';
+import { useWalletStore } from '../store/walletStore';
 import { motion, AnimatePresence } from 'framer-motion';
-import { format, isBefore, addDays } from 'date-fns';
+import { format } from 'date-fns';
 import { clsx } from 'clsx';
-
-const DOMAINS = ['SDE', 'Trading', 'Health', 'Exams', 'Finance', 'Discipline', 'Learning'];
+import {
+  Plus, Check, Trash2, Sword, Zap, Star,
+  ChevronDown, ChevronUp, Filter, Target,
+  Flame, Clock, RotateCcw,
+  Bot, Layers, RefreshCw, AlertCircle
+} from 'lucide-react';
 
 const QuestLog = () => {
-  const { 
-    activeQuests, 
-    completedQuests, 
-    boss, 
-    bossTasks, 
-    hpPercent, 
-    penalties,
-    loadQuests, 
-    loadBoss, 
-    loadPenalties,
-    completeQuest, 
-    completeBossTask 
+  const [activeTab, setActiveTab] = useState('clusters');
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [newQuest, setNewQuest] = useState({
+    title: '', description: '',
+    xp_reward: 100, domain: 'General', difficulty: 'Medium'
+  });
+  const [filter, setFilter] = useState('All');
+  const [completingId, setCompletingId] = useState(null);
+  const [approvingId, setApprovingId] = useState(null);
+
+  const {
+    dailyQuests, todayCompletions, questClusters,
+    isGeneratingClusters, clustersGeneratedAt, clustersApproved,
+    addDailyQuest, completeDaily, deleteDailyQuest,
+    loadQuestClusters, generateQuestClusters, approveCluster,
+    approveAllClusters
   } = useQuestStore();
 
-  const [activeTab, setActiveTab] = useState('ACTIVE');
-  const [filterDomain, setFilterDomain] = useState('All');
-  const [sortBy, setSortBy] = useState('XP');
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [completingId, setCompletingId] = useState(null);
-
-  // New Quest Form State
-  const [newQuest, setNewQuest] = useState({
-    title: '',
-    description: '',
-    domain: 'SDE',
-    xp_reward: 100,
-    rupee_value: 50,
-    due_date: format(addDays(new Date(), 7), 'yyyy-MM-dd'),
-    phase: 1
-  });
+  const { level, streakDays } = useXpStore();
+  const { todayLog, history } = useHealthStore();
+  const { chapters, dsaSolved } = useSdeStore();
+  const { balance } = useWalletStore();
 
   useEffect(() => {
-    loadQuests();
-    loadBoss();
-    loadPenalties();
+    loadQuestClusters();
   }, []);
 
-  const filteredQuests = useMemo(() => {
-    let list = activeTab === 'ACTIVE' ? activeQuests : completedQuests;
-    
-    if (filterDomain !== 'All') {
-      list = list.filter(q => q.domain?.toLowerCase() === filterDomain.toLowerCase());
-    }
-
-    return list.sort((a, b) => {
-      if (sortBy === 'XP') return b.xp_reward - a.xp_reward;
-      if (sortBy === 'Rupees') return b.rupee_value - a.rupee_value;
-      if (sortBy === 'Due Date') return new Date(a.due_date || 0) - new Date(b.due_date || 0);
-      return 0;
-    });
-  }, [activeQuests, completedQuests, activeTab, filterDomain, sortBy]);
-
-  const handleComplete = async (questId) => {
-    setCompletingId(questId);
-    try {
-      await completeQuest(questId);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setCompletingId(null);
-    }
+  const handleGenerateClusters = async () => {
+    const contextData = {
+      level,
+      streak: streakDays,
+      dsaSolved: dsaSolved || 0,
+      chaptersCompleted: chapters?.filter(c => c.completed)?.length || 0,
+      lastHealthScore: history?.[0]?.day_score || 0,
+      gymDone: todayLog?.gym_done || false,
+      completedToday: todayCompletions?.length || 0,
+      wallet: Math.floor((balance || 0) / 100)
+    };
+    await generateQuestClusters(contextData);
   };
 
-  const handleAddQuest = async (e) => {
-    e.preventDefault();
-    const { data, error } = await supabase.from('quests').insert([{
-      ...newQuest,
-      rupee_value: newQuest.rupee_value * 100 // Convert to paise
-    }]);
-
-    if (!error) {
-      setIsModalOpen(false);
-      loadQuests();
-      setNewQuest({
-        title: '',
-        description: '',
-        domain: 'SDE',
-        xp_reward: 100,
-        rupee_value: 50,
-        due_date: format(addDays(new Date(), 7), 'yyyy-MM-dd'),
-        phase: 1
-      });
-    }
-  };
-
-  const getDomainColor = (domain) => {
-    switch(domain?.toLowerCase()) {
-      case 'sde': return 'bg-blue-500';
-      case 'trading': return 'bg-emerald-500';
-      case 'health': return 'bg-rose-500';
-      case 'exams': return 'bg-amber-500';
-      case 'finance': return 'bg-violet-500';
-      case 'learning': return 'bg-indigo-500';
-      default: return 'bg-slate-400';
-    }
-  };
+  const completedCount = todayCompletions?.length || 0;
+  const totalDaily = dailyQuests?.length || 0;
+  const completionPercent = totalDaily
+    ? Math.floor((completedCount / totalDaily) * 100) : 0;
+  const domains = ['All','SDE','Trading','Health',
+    'Exam','Finance','General','Explorer'];
+  const todayStr = new Date().toISOString().split('T')[0];
+  const clustersAreToday = clustersGeneratedAt
+    ?.startsWith(todayStr);
 
   return (
-    <div className="space-y-8 pb-20 max-w-6xl mx-auto">
-      
-      {/* Header */}
-      <div className="flex justify-between items-center">
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6">
+
+      {/* HEADER */}
+      <div className="flex items-start justify-between mb-6">
         <div>
-          <h1 className="text-[28px] font-display font-extrabold text-[#1A1A2E] leading-tight mb-1">QUEST LOG</h1>
-          <p className="text-slate-500 text-sm mt-1">Manage your empire roadmaps and active objectives.</p>
+          <div className="flex items-center gap-2 mb-1">
+            <Sword size={14} className="text-[#E07B39]"/>
+            <p className="text-[10px] font-bold text-[#9A9590]
+              font-['Space_Mono'] uppercase tracking-widest">
+              Quest Log
+            </p>
+          </div>
+          <h1 className="text-2xl font-bold text-[#1A1A2E]
+            font-['Inter'] tracking-tight">
+            Daily Missions
+          </h1>
+          <p className="text-xs text-[#9A9590] font-['Inter'] mt-1">
+            {completedCount}/{totalDaily} done · {completionPercent}%
+          </p>
         </div>
-        <Button 
-          variant="primary" 
-          onClick={() => setIsModalOpen(true)}
-          className="shadow-lg shadow-navy-100"
-        >
-          <Plus className="w-4 h-4 mr-2" /> ADD QUEST
-        </Button>
+        <div className="flex gap-2">
+          <button
+            onClick={handleGenerateClusters}
+            disabled={isGeneratingClusters}
+            className="flex items-center gap-2 bg-[#E07B39] text-white
+              px-4 py-2.5 rounded-xl text-xs font-bold font-['Space_Mono']
+              uppercase tracking-wider hover:opacity-90 transition-all
+              disabled:opacity-50"
+          >
+            <Bot size={13} className={isGeneratingClusters
+              ? 'animate-spin' : ''}/>
+            {isGeneratingClusters ? 'Generating...' : 'JARVIS Missions'}
+          </button>
+          <button
+            onClick={() => setShowAddForm(!showAddForm)}
+            className="flex items-center gap-2 bg-[#1A1A2E] text-white
+              px-4 py-2.5 rounded-xl text-xs font-bold font-['Space_Mono']
+              uppercase tracking-wider hover:bg-[#2a2a4e] transition-all"
+          >
+            <Plus size={13}/>
+            Manual
+          </button>
+        </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 bg-slate-100 p-1 rounded-xl w-fit">
-        {['ACTIVE', 'COMPLETED', 'PENALTIES'].map(tab => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
+      {/* PROGRESS BAR */}
+      {totalDaily > 0 && (
+        <div className="mb-6">
+          <div className="h-2 bg-white rounded-full border
+            border-[#E5E0D8] overflow-hidden">
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${completionPercent}%` }}
+              transition={{ duration: 0.8, ease: 'easeOut' }}
+              className="h-full rounded-full"
+              style={{
+                background: completionPercent === 100
+                  ? '#1A6B4A'
+                  : completionPercent >= 50
+                  ? '#E07B39' : '#1A1A2E'
+              }}
+            />
+          </div>
+          {completionPercent === 100 && (
+            <motion.p
+              initial={{ opacity: 0, y: 4 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="text-xs font-bold text-[#1A6B4A]
+                font-['Space_Mono'] uppercase tracking-wider mt-2 text-center"
+            >
+              ⚡ All missions complete — legendary day
+            </motion.p>
+          )}
+        </div>
+      )}
+
+      {/* ADD QUEST FORM */}
+      <AnimatePresence>
+        {showAddForm && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+            className="overflow-hidden mb-6"
+          >
+            <div className="bg-white rounded-2xl border
+              border-[#E5E0D8] p-5 shadow-sm">
+              <p className="text-xs font-bold text-[#1A1A2E]
+                font-['Space_Mono'] uppercase tracking-widest mb-4">
+                Add Manual Quest
+              </p>
+              <input
+                type="text"
+                value={newQuest.title}
+                onChange={e => setNewQuest(p =>
+                  ({ ...p, title: e.target.value }))}
+                placeholder="What needs to be done?"
+                className="w-full bg-[#F5F4F0] border border-transparent
+                  focus:border-[#E07B39] rounded-xl px-4 py-3 text-sm
+                  font-['Inter'] text-[#1A1A2E] placeholder-[#9A9590]
+                  focus:outline-none transition-all mb-3"
+              />
+              <div className="grid grid-cols-2 gap-3 mb-4">
+                <div>
+                  <p className="text-[9px] font-bold text-[#9A9590]
+                    font-['Space_Mono'] uppercase tracking-wider mb-2">
+                    Domain
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {['General','SDE','Trading','Health',
+                      'Exam','Finance'].map(d => (
+                      <button key={d}
+                        onClick={() => setNewQuest(p =>
+                          ({ ...p, domain: d }))}
+                        className={clsx(
+                          'px-2.5 py-1 rounded-lg text-[10px] font-bold',
+                          'font-["Space_Mono"] uppercase transition-all',
+                          newQuest.domain === d
+                            ? 'bg-[#1A1A2E] text-white'
+                            : 'bg-[#F5F4F0] text-[#9A9590]'
+                        )}
+                      >{d}</button>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[9px] font-bold text-[#9A9590]
+                    font-['Space_Mono'] uppercase tracking-wider mb-2">
+                    Difficulty
+                  </p>
+                  <div className="flex gap-1.5">
+                    {[
+                      { d: 'Easy', xp: 50, color: '#1A6B4A' },
+                      { d: 'Medium', xp: 100, color: '#E07B39' },
+                      { d: 'Hard', xp: 200, color: '#C0392B' }
+                    ].map(({ d, xp, color }) => (
+                      <button key={d}
+                        onClick={() => setNewQuest(p => ({
+                          ...p, difficulty: d, xp_reward: xp
+                        }))}
+                        className={clsx(
+                          'flex-1 py-1.5 rounded-lg text-[10px] font-bold',
+                          'font-["Space_Mono"] uppercase transition-all border',
+                          newQuest.difficulty === d
+                            ? 'text-white border-transparent'
+                            : 'bg-white text-[#9A9590] border-[#E5E0D8]'
+                        )}
+                        style={newQuest.difficulty === d
+                          ? { backgroundColor: color } : {}}
+                      >{d}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={async () => {
+                    if (!newQuest.title.trim()) return
+                    await addDailyQuest(newQuest)
+                    setNewQuest({
+                      title: '', description: '',
+                      xp_reward: 100, domain: 'General',
+                      difficulty: 'Medium'
+                    })
+                    setShowAddForm(false)
+                  }}
+                  className="flex-1 bg-[#1A6B4A] text-white py-2.5
+                    rounded-xl text-xs font-bold font-['Space_Mono']
+                    uppercase tracking-wider hover:opacity-90 transition-all"
+                >
+                  Add Quest
+                </button>
+                <button
+                  onClick={() => setShowAddForm(false)}
+                  className="px-4 py-2.5 bg-[#F5F4F0] text-[#9A9590]
+                    rounded-xl text-xs font-bold font-['Space_Mono']
+                    uppercase hover:bg-[#E5E0D8] transition-all"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* TABS */}
+      <div className="flex items-center gap-1 bg-white rounded-xl
+        border border-[#E5E0D8] p-1 w-fit mb-5 overflow-x-auto">
+        {[
+          { id: 'clusters', label: `Clusters (${questClusters.length})` },
+          { id: 'daily', label: `Active (${totalDaily})` },
+          { id: 'completed', label: `Done (${completedCount})` }
+        ].map(tab => (
+          <button key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
             className={clsx(
-              "px-6 py-2 rounded-lg text-xs font-bold tracking-widest transition-all",
-              activeTab === tab 
-                ? "bg-white text-navy-900 shadow-sm" 
-                : "text-slate-500 hover:text-navy-700"
+              'px-4 py-2 rounded-lg text-xs font-bold font-["Space_Mono"]',
+              'uppercase tracking-wider transition-all whitespace-nowrap',
+              activeTab === tab.id
+                ? 'bg-[#1A1A2E] text-white'
+                : 'text-[#9A9590] hover:text-[#1A1A2E]'
             )}
           >
-            {tab}
+            {tab.label}
           </button>
         ))}
       </div>
 
-      <AnimatePresence mode="wait">
-        {activeTab === 'ACTIVE' && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            className="space-y-8"
-          >
-            {/* World Boss Section */}
-            {boss && (
-              <Card className="p-0 overflow-hidden border-rose-200 bg-rose-50/10">
-                <div className="flex">
-                  <div className="w-1 bg-rose-500" />
-                  <div className="flex-1 p-6">
-                    <div className="flex justify-between items-start mb-6">
-                      <div>
-                        <div className="inline-flex items-center px-2 py-0.5 rounded bg-rose-500 text-white text-[10px] font-bold tracking-widest uppercase mb-3">
-                          <Sword className="w-3 h-3 mr-1" /> Active World Boss
-                        </div>
-                        <h2 className="text-2xl font-display font-bold text-slate-900">{boss.name}</h2>
+      {/* ── CLUSTERS TAB ── */}
+      {activeTab === 'clusters' && (
+        <div className="flex flex-col gap-4">
+
+          {/* Empty state */}
+          {questClusters.length === 0 && !isGeneratingClusters && (
+            <div className="text-center py-16">
+              <div className="w-16 h-16 bg-white rounded-2xl border
+                border-[#E5E0D8] flex items-center justify-center
+                mx-auto mb-4">
+                <Bot size={28} className="text-[#E07B39]"/>
+              </div>
+              <p className="text-sm font-bold text-[#1A1A2E]
+                font-['Inter'] mb-2">
+                No missions generated yet
+              </p>
+              <p className="text-xs text-[#9A9590] font-['Inter'] mb-6
+                max-w-sm mx-auto">
+                Hit "JARVIS Missions" — JARVIS will analyze your progress
+                and generate personalized quest clusters for today.
+              </p>
+              <button
+                onClick={handleGenerateClusters}
+                disabled={isGeneratingClusters}
+                className="bg-[#E07B39] text-white px-8 py-3 rounded-xl
+                  font-bold font-['Space_Mono'] uppercase tracking-wider
+                  hover:opacity-90 transition-all flex items-center gap-2
+                  mx-auto"
+              >
+                <Bot size={14}/>
+                Generate Today's Missions
+              </button>
+            </div>
+          )}
+
+          {/* Generating state */}
+          {isGeneratingClusters && (
+            <div className="text-center py-12">
+              <div className="w-12 h-12 bg-[#1A1A2E] rounded-2xl
+                flex items-center justify-center mx-auto mb-4 animate-pulse">
+                <Bot size={22} className="text-[#E07B39]"/>
+              </div>
+              <p className="text-sm font-bold text-[#1A1A2E]
+                font-['Space_Mono'] uppercase tracking-wider mb-1">
+                Analyzing your progress...
+              </p>
+              <p className="text-xs text-[#9A9590] font-['Inter']">
+                JARVIS is building personalized missions for you
+              </p>
+            </div>
+          )}
+
+          {/* Approve All button */}
+          {questClusters.length > 0 && !clustersApproved && (
+            <div className="bg-[#1A1A2E] rounded-2xl p-4 flex items-center
+              justify-between gap-4">
+              <div>
+                <p className="text-xs font-bold text-white
+                  font-['Space_Mono'] uppercase tracking-wider">
+                  {questClusters.filter(c => !c.approved).length} clusters ready
+                </p>
+                <p className="text-[10px] text-white/50 font-['Inter'] mt-0.5">
+                  Approve clusters to add quests to your daily list
+                </p>
+              </div>
+              <button
+                onClick={approveAllClusters}
+                className="flex items-center gap-2 bg-[#E07B39] text-white
+                  px-4 py-2 rounded-xl text-xs font-bold font-['Space_Mono']
+                  uppercase tracking-wider hover:opacity-90 transition-all
+                  whitespace-nowrap"
+              >
+                <Check size={12}/>
+                Approve All
+              </button>
+            </div>
+          )}
+
+          {/* Cluster cards */}
+          {questClusters.map((cluster, ci) => {
+            const clusterQuests = cluster.quests || []
+            const totalXp = cluster.total_xp ||
+              clusterQuests.reduce((s, q) => s + (q.xp_reward || 0), 0)
+            const isApproved = cluster.approved
+
+            return (
+              <motion.div
+                key={cluster.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: ci * 0.06 }}
+                className={clsx(
+                  'bg-white rounded-2xl border overflow-hidden transition-all',
+                  isApproved
+                    ? 'border-[#1A6B4A]/30'
+                    : 'border-[#E5E0D8] hover:shadow-sm'
+                )}
+              >
+                {/* Cluster header */}
+                <div className="p-4 flex items-center justify-between gap-3"
+                  style={{
+                    borderLeft: `4px solid ${clusterQuests[0]?.color || '#1A1A2E'}`
+                  }}
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="text-2xl shrink-0">
+                      {clusterQuests[0]?.icon || '⚔️'}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 mb-0.5">
+                        <p className="text-sm font-bold text-[#1A1A2E]
+                          font-['Inter']">
+                          {cluster.cluster_name}
+                        </p>
+                        <span className="text-[9px] font-bold
+                          font-['Space_Mono'] uppercase px-2 py-0.5
+                          rounded-full bg-[#F5F4F0] text-[#9A9590]">
+                          {cluster.domain}
+                        </span>
+                        {isApproved && (
+                          <span className="text-[9px] font-bold
+                            font-['Space_Mono'] uppercase px-2 py-0.5
+                            rounded-full bg-emerald-50 text-emerald-700">
+                            Active
+                          </span>
+                        )}
                       </div>
-                      <div className="text-right">
-                        <span className="inline-flex py-1 px-3 bg-amber-100 border border-amber-200 text-amber-700 text-[10px] font-bold rounded-full uppercase tracking-wider uppercase">
-                          <Clock className="w-3 h-3 mr-1.5" /> {format(new Date(boss.deadline), 'MMM d')} Deadline
+                      <p className="text-[10px] text-[#9A9590] font-['Inter']
+                        truncate">
+                        {cluster.theme}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-[10px] font-bold
+                      text-[#1A6B4A] font-['Space_Mono']">
+                      +{totalXp} XP
+                    </span>
+                    {!isApproved && (
+                      <button
+                        onClick={async () => {
+                          setApprovingId(cluster.id)
+                          await approveCluster(cluster.id)
+                          setApprovingId(null)
+                        }}
+                        disabled={approvingId === cluster.id}
+                        className="flex items-center gap-1.5 bg-[#1A1A2E]
+                          text-white px-3 py-1.5 rounded-lg text-[10px]
+                          font-bold font-['Space_Mono'] uppercase tracking-wider
+                          hover:bg-[#2a2a4e] transition-all disabled:opacity-50"
+                      >
+                        {approvingId === cluster.id
+                          ? '...'
+                          : <><Check size={10}/> Add</>
+                        }
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Why today */}
+                {clusterQuests[0]?.why_today && (
+                  <div className="px-4 py-2 bg-[#FFF0E6] border-t
+                    border-[#E5E0D8]">
+                    <p className="text-[10px] text-[#E07B39] font-['Inter']
+                      font-medium">
+                      💡 {clusterQuests[0].why_today}
+                    </p>
+                  </div>
+                )}
+
+                {/* Quest list inside cluster */}
+                <div className="border-t border-[#F5F4F0]">
+                  {clusterQuests.map((q, qi) => (
+                    <div key={qi}
+                      className="flex items-start gap-3 px-4 py-3
+                        border-b border-[#F5F4F0] last:border-0"
+                    >
+                      <div className="w-1.5 h-1.5 rounded-full mt-2
+                        shrink-0 bg-[#E5E0D8]"/>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-[#1A1A2E]
+                          font-['Inter']">
+                          {q.title}
+                        </p>
+                        {q.description && (
+                          <p className="text-[10px] text-[#9A9590]
+                            font-['Inter'] mt-0.5 leading-relaxed">
+                            {q.description}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {q.time_estimate && (
+                          <span className="text-[9px] text-[#9A9590]
+                            font-['Space_Mono']">
+                            {q.time_estimate}
+                          </span>
+                        )}
+                        <span className={clsx(
+                          'text-[9px] font-bold font-["Space_Mono"]',
+                          'uppercase px-1.5 py-0.5 rounded',
+                          q.difficulty === 'Hard'
+                            ? 'bg-red-50 text-red-600'
+                            : q.difficulty === 'Medium'
+                            ? 'bg-yellow-50 text-yellow-600'
+                            : 'bg-green-50 text-green-600'
+                        )}>
+                          {q.difficulty}
+                        </span>
+                        <span className="text-[10px] font-bold
+                          text-[#1A6B4A] font-['Space_Mono']">
+                          +{q.xp_reward}
                         </span>
                       </div>
                     </div>
-
-                    <div className="mb-8">
-                      <div className="flex justify-between text-xs font-bold mb-2">
-                        <span className="text-rose-600">BOSS HEALTH</span>
-                        <span className="font-mono">{hpPercent}%</span>
-                      </div>
-                      <ProgressBar value={hpPercent} color="danger" height="12px" />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {bossTasks.map(task => (
-                        <div key={task.id} className="flex items-center justify-between p-3 bg-white rounded-xl border border-slate-100 shadow-sm">
-                          <div className="flex items-center gap-3">
-                            <button 
-                              onClick={() => !task.completed && completeBossTask(task.id)}
-                              className={clsx(
-                                "w-5 h-5 rounded border-2 flex items-center justify-center transition-all",
-                                task.completed ? "bg-rose-500 border-rose-500 text-white" : "border-slate-200 hover:border-rose-400"
-                              )}
-                            >
-                              {task.completed && <CheckCircle2 className="w-3.5 h-3.5" />}
-                            </button>
-                            <span className={clsx("text-sm font-medium", task.completed ? "text-slate-400 line-through" : "text-slate-700")}>
-                              {task.task_text}
-                            </span>
-                          </div>
-                          <Badge text={`-${task.hp_damage}HP`} color="danger" />
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="mt-6 pt-6 border-t border-rose-100">
-                      <p className="text-[10px] font-bold text-rose-400 uppercase tracking-widest mb-2">Victory Rewards</p>
-                      <div className="flex gap-4">
-                        <span className="text-xs font-bold text-slate-700">⚡ {boss.xp_reward}P</span>
-                        <span className="text-xs font-bold text-slate-700">💰 {boss.gold_reward} GOLD</span>
-                        <span className="text-xs font-bold text-slate-700">🏆 EXAM SLAYER BADGE</span>
-                      </div>
-                    </div>
-                  </div>
+                  ))}
                 </div>
-              </Card>
-            )}
+              </motion.div>
+            )
+          })}
+        </div>
+      )}
 
-            {/* Filters */}
-            <div className="flex flex-wrap gap-4 items-center justify-between bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
-              <div className="flex items-center gap-2 overflow-x-auto pb-2 md:pb-0 no-scrollbar">
-                <Filter className="w-4 h-4 text-slate-400 mr-2" />
-                <button 
-                  onClick={() => setFilterDomain('All')}
+      {/* ── DAILY TAB ── */}
+      {activeTab === 'daily' && (
+        <div className="flex flex-col gap-3">
+
+          {/* Domain filter */}
+          <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+            {domains.map(d => (
+              <button key={d}
+                onClick={() => setFilter(d)}
+                className={clsx(
+                  'px-3 py-1.5 rounded-full text-[10px] font-bold',
+                  'font-["Space_Mono"] uppercase tracking-wider',
+                  'whitespace-nowrap transition-all border',
+                  filter === d
+                    ? 'bg-[#1A1A2E] text-white border-[#1A1A2E]'
+                    : 'bg-white text-[#9A9590] border-[#E5E0D8]'
+                )}
+              >{d}</button>
+            ))}
+          </div>
+
+          {dailyQuests
+            ?.filter(q => filter === 'All' || q.domain === filter)
+            ?.map((quest, i) => {
+              const isDone = todayCompletions?.find(
+                c => c.quest_id === quest.id
+              )
+              const domainColors = {
+                SDE: { bg: '#EEF2FF', text: '#1A1A2E' },
+                Trading: { bg: '#FFF0E6', text: '#E07B39' },
+                Health: { bg: '#F0FDF4', text: '#1A6B4A' },
+                Exam: { bg: '#FEF2F2', text: '#C0392B' },
+                Finance: { bg: '#EEF2FF', text: '#1A1A2E' },
+                Explorer: { bg: '#F5F3FF', text: '#7C3AED' },
+                General: { bg: '#F5F4F0', text: '#9A9590' }
+              }
+              const dc = domainColors[quest.domain] || domainColors.General
+
+              return (
+                <motion.div key={quest.id || i}
+                  layout
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: i * 0.04 }}
                   className={clsx(
-                    "px-4 py-1.5 rounded-full text-[11px] font-bold tracking-widest uppercase transition-all whitespace-nowrap",
-                    filterDomain === 'All' ? "bg-navy-900 text-white shadow-md shadow-navy-100" : "bg-slate-50 text-slate-500 hover:bg-slate-100"
+                    'bg-white rounded-2xl border transition-all',
+                    isDone
+                      ? 'border-[#1A6B4A]/30 opacity-60'
+                      : 'border-[#E5E0D8] hover:shadow-sm'
                   )}
                 >
-                  All
-                </button>
-                {DOMAINS.map(domain => (
-                  <button 
-                    key={domain}
-                    onClick={() => setFilterDomain(domain)}
-                    className={clsx(
-                      "px-4 py-1.5 rounded-full text-[11px] font-bold tracking-widest uppercase transition-all whitespace-nowrap",
-                      filterDomain === domain ? "bg-navy-900 text-white shadow-md shadow-navy-100" : "bg-slate-50 text-slate-500 hover:bg-slate-100"
-                    )}
-                  >
-                    {domain}
-                  </button>
-                ))}
-              </div>
-              
-              <div className="flex items-center gap-3">
-                <ArrowUpDown className="w-4 h-4 text-slate-400" />
-                <select 
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value)}
-                  className="bg-transparent text-[11px] font-bold uppercase tracking-widest text-slate-600 focus:outline-none cursor-pointer"
-                >
-                  <option value="XP">Sort by XP</option>
-                  <option value="Rupees">Sort by Rupees</option>
-                  <option value="Due Date">Sort by Due Date</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Quests List */}
-            <div className="grid grid-cols-1 gap-4">
-              <AnimatePresence>
-                {filteredQuests.map(quest => {
-                  const isNearlyDue = quest.due_date && isBefore(new Date(quest.due_date), addDays(new Date(), 3));
-                  return (
-                    <motion.div
-                      key={quest.id}
-                      layout
-                      initial={{ opacity: 0, scale: 0.95 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      exit={{ opacity: 0, x: -50 }}
-                      className="group"
+                  <div className="flex items-center gap-3 p-4">
+                    <button
+                      onClick={async () => {
+                        if (isDone) return
+                        setCompletingId(quest.id)
+                        await completeDaily(quest.id)
+                        setCompletingId(null)
+                      }}
+                      disabled={!!isDone || completingId === quest.id}
+                      className={clsx(
+                        'w-6 h-6 rounded-full border-2 flex items-center',
+                        'justify-center shrink-0 transition-all',
+                        isDone
+                          ? 'bg-[#1A6B4A] border-[#1A6B4A]'
+                          : completingId === quest.id
+                          ? 'border-[#E07B39] animate-pulse'
+                          : 'border-[#E5E0D8] hover:border-[#1A6B4A]'
+                      )}
                     >
-                      <Card className="p-0 overflow-hidden border-slate-200 hover:border-navy-200 hover:shadow-xl transition-all duration-300">
-                        <div className="flex min-h-[100px]">
-                          <div className={clsx("w-1.5", getDomainColor(quest.domain))} />
-                          <div className="flex-1 p-5">
-                            <div className="flex justify-between items-start mb-2">
-                              <div className="flex items-center gap-2">
-                                <Badge text={quest.domain || 'General'} color={quest.domain?.toLowerCase() === 'sde' ? 'navy' : 'success'} />
-                                <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded uppercase tracking-widest">
-                                  Phase {quest.phase}
-                                </span>
-                              </div>
-                              {quest.due_date && (
-                                <span className={clsx(
-                                  "text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded-md",
-                                  isNearlyDue ? "bg-amber-100 text-amber-600" : "text-slate-400"
-                                )}>
-                                  Due: {format(new Date(quest.due_date), 'MMM d')}
-                                </span>
-                              )}
-                            </div>
-                            
-                            <div className="flex justify-between items-end">
-                              <div className="flex-1 mr-8">
-                                <h3 className="text-[15px] font-bold text-slate-900 mb-1 group-hover:text-navy-900 transition-colors">
-                                  {quest.title}
-                                </h3>
-                                <p className="text-sm text-slate-500 leading-relaxed max-w-2xl">{quest.description}</p>
-                              </div>
-                              
-                              <div className="flex items-center gap-6">
-                                <div className="text-right">
-                                  <div className="flex gap-4 mb-2">
-                                    <div className="text-center">
-                                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter mb-0.5">XP</p>
-                                      <p className="text-xs font-mono font-bold text-xp">+{quest.xp_reward}</p>
-                                    </div>
-                                    <div className="text-center">
-                                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter mb-0.5">Rupees</p>
-                                      <p className="text-xs font-mono font-bold text-success">+₹{quest.rupee_value / 100}</p>
-                                    </div>
-                                  </div>
-                                  <Button 
-                                    variant="ghost" 
-                                    size="sm"
-                                    onClick={() => handleComplete(quest.id)}
-                                    disabled={completingId === quest.id}
-                                    className="h-9 px-6 text-[11px] font-bold uppercase tracking-widest group-hover:bg-success group-hover:text-white group-hover:border-success transition-all"
-                                  >
-                                    {completingId === quest.id ? "Working..." : "Complete"}
-                                  </Button>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </Card>
-                    </motion.div>
-                  );
-                })}
-              </AnimatePresence>
-              {filteredQuests.length === 0 && (
-                <Card className="p-20 text-center border-dashed border-slate-200">
-                  <Dna className="w-12 h-12 text-slate-200 mx-auto mb-4" />
-                  <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">No active quests in this phase.</p>
-                </Card>
-              )}
-            </div>
-          </motion.div>
-        )}
+                      {isDone && (
+                        <Check size={12} className="text-white"
+                          strokeWidth={3}/>
+                      )}
+                    </button>
 
-        {activeTab === 'COMPLETED' && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-8"
-          >
-            {/* Stats Header */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <Card className="p-6 bg-navy-900 text-white border-none shadow-xl">
-                <p className="text-[10px] font-bold text-navy-300 uppercase tracking-widest mb-2">Total Quests</p>
-                <h3 className="text-3xl font-display font-bold">{completedQuests.length}</h3>
-              </Card>
-              <Card className="p-6 border-slate-200 shadow-sm">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Total XP Gained</p>
-                <h3 className="text-3xl font-display font-bold text-xp">
-                  {completedQuests.reduce((sum, q) => sum + q.xp_reward, 0).toLocaleString()}P
-                </h3>
-              </Card>
-              <Card className="p-6 border-slate-200 shadow-sm">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Total Rupees Earned</p>
-                <h3 className="text-3xl font-display font-bold text-success">
-                  ₹{(completedQuests.reduce((sum, q) => sum + q.rupee_value, 0) / 100).toLocaleString()}
-                </h3>
-              </Card>
-            </div>
-
-            <div className="space-y-4">
-              {completedQuests.map(quest => (
-                <Card key={quest.id} className="p-5 border-slate-200 bg-slate-50/50 grayscale opacity-75">
-                  <div className="flex justify-between items-center">
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 rounded-full bg-success/20 text-success flex items-center justify-center">
-                        <CheckCircle2 className="w-6 h-6" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-bold text-slate-900 line-through">{quest.title}</h3>
-                        <p className="text-[10px] font-bold text-slate-400 uppercase">
-                          Completed on {format(new Date(quest.completed_at || quest.created_at), 'MMM d, yyyy')}
+                    <div className="flex-1 min-w-0 px-1">
+                      <p className={clsx(
+                        'text-sm font-bold font-["Inter"]',
+                        isDone
+                          ? 'text-[#9A9590] line-through'
+                          : 'text-[#1A1A2E]'
+                      )}>
+                        {quest.title}
+                      </p>
+                      {quest.description && (
+                        <p className="text-[10px] text-[#9A9590]
+                          font-['Inter'] mt-0.5 truncate">
+                          {quest.description}
                         </p>
-                      </div>
+                      )}
+                      {quest.source === 'jarvis' && (
+                        <span className="text-[9px] text-[#E07B39]
+                          font-['Space_Mono'] uppercase tracking-wider">
+                          JARVIS
+                        </span>
+                      )}
                     </div>
-                    <div className="flex gap-4">
-                      <Badge text={`+${quest.xp_reward}XP`} color="xp" />
-                      <Badge text={`+₹${quest.rupee_value / 100}`} color="success" />
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="hidden sm:inline-block text-[9px]
+                        font-bold font-['Space_Mono'] uppercase px-2 py-0.5
+                        rounded-full"
+                        style={{
+                          backgroundColor: dc.bg,
+                          color: dc.text
+                        }}
+                      >
+                        {quest.domain}
+                      </span>
+                      <span className="text-[10px] font-bold text-[#1A6B4A]
+                        font-['Space_Mono'] whitespace-nowrap">
+                        +{quest.xp_reward}
+                      </span>
+                      <button
+                        onClick={() => deleteDailyQuest(quest.id)}
+                        className="p-1.5 rounded-lg text-[#9A9590]
+                          hover:text-[#C0392B] hover:bg-red-50 transition-all"
+                      >
+                        <Trash2 size={12}/>
+                      </button>
                     </div>
                   </div>
-                </Card>
-              ))}
+                </motion.div>
+              )
+            })}
+
+          {dailyQuests?.filter(q =>
+            filter === 'All' || q.domain === filter
+          )?.length === 0 && (
+            <div className="text-center py-12">
+              <Target size={28} className="text-[#E5E0D8] mx-auto mb-3"/>
+              <p className="text-sm text-[#9A9590] font-['Inter']">
+                {filter !== 'All'
+                  ? `No ${filter} quests.`
+                  : 'No active quests. Generate or add manually.'}
+              </p>
             </div>
-          </motion.div>
-        )}
+          )}
+        </div>
+      )}
 
-        {activeTab === 'PENALTIES' && (
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="space-y-6"
-          >
-            <Card className="p-0 overflow-hidden border-rose-200">
-              <div className="bg-rose-50/50 p-6 border-b border-rose-100 flex justify-between items-center">
-                <div>
-                  <h3 className="text-sm font-bold text-rose-900 uppercase tracking-widest">Penalty Log</h3>
-                  <p className="text-rosy-700 text-xs mt-1">Consequences of broken discipline.</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-[10px] font-bold text-rose-400 uppercase mb-1">Total Loss</p>
-                  <p className="text-xl font-display font-bold text-rose-600">
-                    -₹{(penalties.reduce((sum, p) => sum + (p.gold_penalty || 0), 0)).toLocaleString()}
-                  </p>
-                </div>
-              </div>
-              
-              <div className="divide-y divide-slate-100 overflow-x-auto">
-                <table className="w-full">
-                  <thead>
-                    <tr className="bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">
-                      <th className="px-6 py-3 text-left">Date</th>
-                      <th className="px-6 py-3 text-left">Reason</th>
-                      <th className="px-6 py-3 text-right">XP Lost</th>
-                      <th className="px-6 py-3 text-right">Rupees Lost</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50">
-                    {penalties.map(penalty => (
-                      <tr key={penalty.id} className="hover:bg-slate-50">
-                        <td className="px-6 py-4 text-xs text-slate-500">{format(new Date(penalty.created_at), 'MMM d, HH:mm')}</td>
-                        <td className="px-6 py-4 text-xs font-bold text-slate-700">{penalty.reason}</td>
-                        <td className="px-6 py-4 text-xs font-mono font-bold text-rose-500 text-right">-{penalty.xp_penalty}P</td>
-                        <td className="px-6 py-4 text-xs font-mono font-bold text-rose-500 text-right">-₹{penalty.gold_penalty}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {penalties.length === 0 && (
-                  <div className="p-12 text-center">
-                    <p className="text-xs text-slate-400 font-bold uppercase tracking-widest">No penalties recorded. Immaculate discipline.</p>
-                  </div>
-                )}
-              </div>
-            </Card>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Add Quest Modal */}
-      <AnimatePresence>
-        {isModalOpen && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setIsModalOpen(false)}
-              className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
-            />
-            <motion.div 
-              initial={{ scale: 0.9, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.9, opacity: 0, y: 20 }}
-              className="relative bg-white rounded-3xl shadow-2xl w-full max-w-xl overflow-hidden"
+      {/* ── COMPLETED TAB ── */}
+      {activeTab === 'completed' && (
+        <div className="flex flex-col gap-3">
+          {todayCompletions?.length === 0 && (
+            <div className="text-center py-12">
+              <Check size={28} className="text-[#E5E0D8] mx-auto mb-3"/>
+              <p className="text-sm text-[#9A9590] font-['Inter']">
+                Nothing completed yet today.
+              </p>
+            </div>
+          )}
+          {todayCompletions?.map((item, i) => (
+            <motion.div key={item.id || i}
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: i * 0.04 }}
+              className="bg-white rounded-2xl border border-[#1A6B4A]/20
+                p-4 flex items-center gap-3"
             >
-              <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                <h2 className="text-xl font-display font-bold text-slate-900">NEW OBJECTIVE</h2>
-                <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-white rounded-full transition-colors">
-                  <X className="w-5 h-5 text-slate-400" />
-                </button>
+              <div className="w-6 h-6 rounded-full bg-[#1A6B4A]
+                flex items-center justify-center shrink-0">
+                <Check size={12} className="text-white" strokeWidth={3}/>
               </div>
-
-              <form onSubmit={handleAddQuest} className="p-8 space-y-6">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Quest Title</label>
-                  <input 
-                    required
-                    value={newQuest.title}
-                    onChange={(e) => setNewQuest({...newQuest, title: e.target.value})}
-                    placeholder="E.g. Solve 50 Hard LeetCode problems"
-                    className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-navy-100 transition-all"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Description</label>
-                  <textarea 
-                    value={newQuest.description}
-                    onChange={(e) => setNewQuest({...newQuest, description: e.target.value})}
-                    placeholder="Break down the steps required to complete this quest..."
-                    rows={3}
-                    className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-navy-100 transition-all"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Domain</label>
-                    <select 
-                      value={newQuest.domain}
-                      onChange={(e) => setNewQuest({...newQuest, domain: e.target.value})}
-                      className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none"
-                    >
-                      {DOMAINS.map(d => <option key={d} value={d}>{d}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Phase</label>
-                    <input 
-                      type="number"
-                      min="1" max="5"
-                      value={newQuest.phase}
-                      onChange={(e) => setNewQuest({...newQuest, phase: parseInt(e.target.value)})}
-                      className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-6">
-                   <div>
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">XP Reward</label>
-                    <select 
-                      value={newQuest.xp_reward}
-                      onChange={(e) => setNewQuest({...newQuest, xp_reward: parseInt(e.target.value)})}
-                      className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none"
-                    >
-                      {[50, 80, 100, 150, 200, 500].map(v => <option key={v} value={v}>{v} XP</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Rupee Reward</label>
-                    <select 
-                      value={newQuest.rupee_value}
-                      onChange={(e) => setNewQuest({...newQuest, rupee_value: parseInt(e.target.value)})}
-                      className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none"
-                    >
-                      {[20, 30, 50, 100, 200, 500].map(v => <option key={v} value={v}>₹{v}</option>)}
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Due Date</label>
-                   <input 
-                      type="date"
-                      value={newQuest.due_date}
-                      onChange={(e) => setNewQuest({...newQuest, due_date: e.target.value})}
-                      className="w-full bg-slate-50 border border-slate-100 rounded-xl px-4 py-3 text-sm font-bold text-slate-700 focus:outline-none"
-                   />
-                </div>
-
-                <div className="pt-4">
-                  <Button type="submit" variant="primary" className="w-full h-12 shadow-xl shadow-navy-100 text-sm tracking-widest">
-                    INITIALIZE QUEST
-                  </Button>
-                </div>
-              </form>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-bold text-[#9A9590]
+                  font-['Inter'] line-through truncate">
+                  {item.quest_title || item.title}
+                </p>
+              </div>
+              <span className="text-[10px] font-bold text-[#1A6B4A]
+                font-['Space_Mono'] shrink-0">
+                +{item.xp_reward || 100} XP
+              </span>
             </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
+          ))}
+        </div>
+      )}
 
     </div>
-  );
-};
+  )
+}
 
-export default QuestLog;
+export default QuestLog

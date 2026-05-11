@@ -1,32 +1,51 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState, Suspense } from 'react';
+import { motion } from 'framer-motion';
 import { Routes, Route } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import BottomNav from './components/BottomNav';
-import CommandCenter from './pages/CommandCenter';
-import Tracker from './pages/Tracker';
-import QuestLog from './pages/QuestLog';
-import SDERoadmap from './pages/SDERoadmap';
-import TradingRoadmap from './pages/TradingRoadmap';
-import ExamMode from './pages/ExamMode';
-import HealthRoadmap from './pages/HealthRoadmap';
-import FinanceBooks from './pages/FinanceBooks';
-import CharacterSheet from './pages/CharacterSheet';
-import AIPlanner from './pages/AIPlanner';
-import Pomodoro from './pages/Pomodoro';
-import Settings from './pages/Settings';
+import JarvisToast from './components/JarvisToast';
+import LevelUpEvent from './components/LevelUpEvent';
+const CommandCenter = React.lazy(() => import('./pages/CommandCenter'));
+const Tracker = React.lazy(() => import('./pages/Tracker'));
+const QuestLog = React.lazy(() => import('./pages/QuestLog'));
+const SDERoadmap = React.lazy(() => import('./pages/SDERoadmap'));
+const TradingRoadmap = React.lazy(() => import('./pages/TradingRoadmap'));
+const ExamMode = React.lazy(() => import('./pages/ExamMode'));
+const Health = React.lazy(() => import('./pages/Health'));
+const FinanceBooks = React.lazy(() => import('./pages/FinanceBooks'));
+const CharacterSheet = React.lazy(() => import('./pages/CharacterSheet'));
+const AIPlanner = React.lazy(() => import('./pages/AIPlanner'));
+const Pomodoro = React.lazy(() => import('./pages/Pomodoro'));
+const Settings = React.lazy(() => import('./pages/Settings'));
+const Explorer = React.lazy(() => import('./pages/Explorer'));
+const AIEngineerTrack = React.lazy(() => import('./pages/AIEngineerTrack'));
 
 import { useSettingsStore } from './store/settingsStore';
 import { useXpStore } from './store/xpStore';
 import { useWalletStore } from './store/walletStore';
 import { useQuestStore } from './store/questStore';
+import { useHealthStore } from './store/healthStore';
+import { useSdeStore } from './store/sdeStore';
+import { useExamStore } from './store/examStore';
+import { useTradingStore } from './store/tradingStore';
+import { useCharacterStore } from './store/characterStore';
+import { useFinanceStore } from './store/financeStore';
 import { supabase } from './lib/supabase';
-import { ShieldAlert, Key } from 'lucide-react';
+import { ShieldAlert, Key, Zap, Brain, Shield } from 'lucide-react';
 
 function App() {
   const { loadSettings } = useSettingsStore();
   const { loadPlayerState, checkStreak } = useXpStore();
   const { loadWallet } = useWalletStore();
   const { loadQuests } = useQuestStore();
+  const { loadHealthData } = useHealthStore();
+  const { loadRoadmap } = useSdeStore();
+  const { loadSemesters } = useExamStore();
+  const { loadTradingData } = useTradingStore();
+  const { loadCharacterData } = useCharacterStore();
+  const { loadFinanceData } = useFinanceStore();
+  const [systemLoading, setSystemLoading] = useState(true);
+  const [loadingText, setLoadingText] = useState('Initializing neural link...');
 
   const isConfigured = !!supabase;
 
@@ -34,13 +53,47 @@ function App() {
     if (!isConfigured) return;
 
     const initApp = async () => {
-      await loadSettings();
-      await Promise.all([
-        loadPlayerState(),
-        loadWallet(),
-        loadQuests(),
-        checkStreak()
-      ]);
+      setSystemLoading(true);
+      
+      const texts = [
+        'Booting neural systems...',
+        'Loading character stats...',
+        'Syncing wallet and quests...',
+        'Fetching SDE roadmap...',
+        'Loading trading data...',
+        'Syncing health protocol...',
+        'Loading exam intel...',
+        'Finalizing systems...',
+        'PLAYER ONE — Online.'
+      ];
+      
+      let i = 0;
+      const textInterval = setInterval(() => {
+        setLoadingText(texts[i % texts.length]);
+        i++;
+      }, 250);
+
+      try {
+        // Run all critical data fetches in parallel for maximum speed
+        await Promise.all([
+          loadSettings(),
+          loadPlayerState(),
+          loadWallet(),
+          loadQuests(),
+          checkStreak(),
+          loadHealthData(),
+          loadRoadmap(),
+          loadSemesters(),
+          loadTradingData(),
+          loadCharacterData(),
+          loadFinanceData()
+        ]);
+      } catch (err) {
+        console.error("System initialization failed:", err);
+      } finally {
+        clearInterval(textInterval);
+        setTimeout(() => setSystemLoading(false), 200);
+      }
     };
     initApp();
   }, [isConfigured]);
@@ -77,25 +130,68 @@ function App() {
     );
   }
 
+  if (systemLoading) {
+    return (
+      <div className="min-h-screen bg-[#F5F4F0] flex flex-col items-center justify-center p-6 text-center">
+        <motion.div 
+          initial={{ scale: 0.9, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          className="flex flex-col items-center"
+        >
+          <div className="w-16 h-16 bg-[#1A1A2E] rounded-2xl flex items-center justify-center mb-6 shadow-xl animate-pulse">
+            <Zap className="w-8 h-8 text-[#E07B39]" />
+          </div>
+          <h2 className="font-display text-2xl font-extrabold text-[#1A1A2E] tracking-tighter uppercase mb-2">SYSTEM INITIALIZING</h2>
+          <p className="font-mono text-[11px] text-[#9A9590] uppercase tracking-[0.2em]">{loadingText}</p>
+          
+          <div className="w-48 h-1 bg-[#E5E0D8] rounded-full mt-8 overflow-hidden">
+            <motion.div 
+              className="h-full bg-[#1A1A2E]"
+              animate={{ x: [-200, 200] }}
+              transition={{ repeat: Infinity, duration: 1.5, ease: "linear" }}
+            />
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex min-h-screen bg-[var(--bg-secondary)] text-[var(--text-primary)] transition-colors duration-300">
+      <JarvisToast />
+      <LevelUpEvent />
       <Sidebar />
-      <main className="ml-[260px] flex-1 min-h-screen p-8 bg-[var(--bg-primary)]">
+      <main className="lg:ml-[260px] ml-0 flex-1 min-h-screen p-4 lg:p-8 bg-[var(--bg-primary)]">
         <div className="max-w-7xl mx-auto h-full">
-          <Routes>
-            <Route path="/" element={<CommandCenter />} />
-            <Route path="/tracker" element={<Tracker />} />
-            <Route path="/quests" element={<QuestLog />} />
-            <Route path="/character" element={<CharacterSheet />} />
-            <Route path="/sde" element={<SDERoadmap />} />
-            <Route path="/trading" element={<TradingRoadmap />} />
-            <Route path="/exams" element={<ExamMode />} />
-            <Route path="/health" element={<HealthRoadmap />} />
-            <Route path="/finance" element={<FinanceBooks />} />
-            <Route path="/planner" element={<AIPlanner />} />
-            <Route path="/pomodoro" element={<Pomodoro />} />
-            <Route path="/settings" element={<Settings />} />
-          </Routes>
+          <Suspense fallback={
+            <div className="flex-1 flex items-center justify-center min-h-screen bg-[#F5F4F0]">
+              <div className="flex flex-col items-center gap-3">
+                <div className="w-8 h-8 bg-[#1A1A2E] rounded-lg animate-pulse flex items-center justify-center">
+                  <Zap className="w-4 h-4 text-[#E07B39]" />
+                </div>
+                <p className="text-[10px] font-bold text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest">
+                  Loading...
+                </p>
+              </div>
+            </div>
+          }>
+            <Routes>
+              <Route path="/" element={<CommandCenter />} />
+              <Route path="/tracker" element={<Tracker />} />
+              <Route path="/quests" element={<QuestLog />} />
+              <Route path="/character" element={<CharacterSheet />} />
+              <Route path="/sde" element={<SDERoadmap />} />
+              <Route path="/trading" element={<TradingRoadmap />} />
+              <Route path="/exams" element={<ExamMode />} />
+              <Route path="/health" element={<Health />} />
+              <Route path="/finance" element={<FinanceBooks />} />
+              <Route path="/planner" element={<AIPlanner />} />
+              <Route path="/pomodoro" element={<Pomodoro />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/explorer" element={<Explorer />} />
+              <Route path="/ai-track" element={<AIEngineerTrack />} />
+            </Routes>
+          </Suspense>
         </div>
       </main>
     </div>

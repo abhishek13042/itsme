@@ -1,11 +1,21 @@
 import { supabase } from './supabase';
 
 export const LEVEL_FORMULA = {
-  getLevel: (totalXP) => Math.floor(Math.sqrt(totalXP / 100)) + 1,
-  getXpForNextLevel: (level) => Math.pow(level * 10, 2),
+  getLevel: (totalXP) => Math.floor(Math.sqrt(Math.max(0, totalXP) / 100)) + 1,
+  
+  // XP threshold where Level 1 starts at 0, Level 2 starts at 100, Level 3 starts at 400...
+  xpForLevel: (lvl) => Math.pow(lvl - 1, 2) * 100,
+
+  // Current progress within the level
   getXpProgress: (totalXP) => {
-    const level = Math.floor(Math.sqrt(totalXP / 100)) + 1;
-    return totalXP - Math.pow((level - 1) * 10, 2);
+    const level = Math.floor(Math.sqrt(Math.max(0, totalXP) / 100)) + 1;
+    const baseXP = Math.pow(level - 1, 2) * 100;
+    const nextLevelXP = Math.pow(level, 2) * 100;
+    
+    return {
+      current: totalXP - baseXP,
+      needed: nextLevelXP - baseXP
+    };
   }
 };
 
@@ -147,46 +157,62 @@ export const checkAndUpdateStreak = async () => {
 };
 
 export const checkBadges = async (player) => {
-  const currentBadges = player.badges || [];
-  const newBadges = [];
+  try {
+    const { data: allBadges } = await supabase.from('badges').select('*').eq('earned', false);
+    if (!allBadges || allBadges.length === 0) return [];
 
-  const addBadge = (id) => {
-    if (!currentBadges.includes(id)) {
-      newBadges.push(id);
+    const newBadges = [];
+    const today = new Date().toISOString().split('T')[0];
+
+    // Evaluate conditions
+    for (const badge of allBadges) {
+      let earned = false;
+      
+      switch (badge.badge_key) {
+        case 'first_blood':
+          const { count: dqCount } = await supabase.from('daily_completions').select('*', { count: 'exact', head: true });
+          if (dqCount >= 1) earned = true;
+          break;
+        case 'week_warrior':
+          if (player.streak_days >= 7) earned = true;
+          break;
+        case 'month_monk':
+          if (player.streak_days >= 30) earned = true;
+          break;
+        case 'dsa_warrior':
+          if (player.lc_problems_solved >= 100) earned = true;
+          break;
+        case 'dsa_master':
+          if (player.lc_problems_solved >= 300) earned = true;
+          break;
+        case 'gym_initiate':
+          if (player.streak_days >= 7) earned = true; // Simplified check for streak context
+          break;
+        case 'deep_thinker':
+          const { count: bLogs } = await supabase.from('brain_logs').select('*', { count: 'exact', head: true });
+          if (bLogs >= 10) earned = true;
+          break;
+        case 'problem_solver':
+          const { count: bLogs30 } = await supabase.from('brain_logs').select('*', { count: 'exact', head: true });
+          if (bLogs30 >= 30) earned = true;
+          break;
+        // ... more cases can be added as needed
+      }
+
+      if (earned) {
+        await supabase.from('badges').update({ 
+          earned: true, 
+          earned_at: new Date().toISOString() 
+        }).eq('id', badge.id);
+        
+        await awardXP(badge.xp_reward || 50, `badge_unlocked:${badge.title}`);
+        newBadges.push(badge.title);
+      }
     }
-  };
 
-  // Badge Logic
-  // "First Blood" → complete first daily quest
-  const { data: completions } = await supabase.from('daily_completions').select('*').limit(1);
-  if (completions && completions.length > 0) addBadge("First Blood");
-
-  // "Week Warrior" → 7 day streak
-  if (player.streak_days >= 7) addBadge("Week Warrior");
-
-  // "Century" → 100 XP in one day
-  const today = new Date().toISOString().split('T')[0];
-  const { data: todayXP } = await supabase
-    .from('xp_log')
-    .select('final_amount')
-    .gte('created_at', today);
-  const totalToday = (todayXP || []).reduce((sum, log) => sum + log.final_amount, 0);
-  if (totalToday >= 100) addBadge("Century");
-
-  // "Exam Slayer" → defeat exam boss
-  const { data: bosses } = await supabase.from('boss').select('*').eq('name', 'Final Sem Exam Gauntlet').eq('current_hp', 0);
-  if (bosses && bosses.length > 0) addBadge("Exam Slayer");
-
-  // "Grinder" → 30 day streak
-  if (player.streak_days >= 30) addBadge("Grinder");
-
-  // "Code Initiate" → complete first SDE quest
-  const { data: sdeQuests } = await supabase.from('quests').select('*').eq('domain', 'sde').eq('completed', true).limit(1);
-  if (sdeQuests && sdeQuests.length > 0) addBadge("Code Initiate");
-
-  // "Market Journal" → log 10 trades
-  const { count } = await supabase.from('trades').select('*', { count: 'exact', head: true });
-  if (count >= 10) addBadge("Market Journal");
-
-  return newBadges;
+    return newBadges;
+  } catch (err) {
+    console.error('Error in checkBadges:', err);
+    return [];
+  }
 };

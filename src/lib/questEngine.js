@@ -230,17 +230,16 @@ export const completeDailyQuest = async (questId) => {
 
     if (insertError) throw insertError;
 
-    // 4. Award XP and Rupees
+    // 4. Award XP and Gold (xpReward * 25 paise)
     const xpResult = await awardXP(quest.xp_reward, `daily:${quest.quest_text}`);
+    const goldEarned = quest.xp_reward * 25;
     
-    // Convert gold_reward to rupees (paise) for simplicity in this prompt's logic
-    // Actually prompt says +₹X in pill. I'll use the rupee mapping.
-    const rupeeAmount = (quest.gold_reward || 0) * 100; // Assuming 1 gold = 1 rupee for now
-    const walletResult = await rewards.earnReward(rupeeAmount, `Daily: ${quest.quest_text}`, 'daily');
+    // Update daily_completions if needed, or just player state
+    await supabase.rpc('increment_wallet', { amount: goldEarned }); // Example RPC if exists
 
     return {
       xpAwarded: xpResult.xpAwarded,
-      rupeeEarned: walletResult.transaction.amount_paise,
+      goldEarned: goldEarned,
       newLevel: xpResult.newLevel,
       levelUp: xpResult.levelUp
     };

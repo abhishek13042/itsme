@@ -1,359 +1,541 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { useAiStore } from '../store/aiStore';
-import { useXpStore } from '../store/xpStore';
-import { useWalletStore } from '../store/walletStore';
-import { useQuestStore } from '../store/questStore';
-import Card from '../components/Card';
-import Badge from '../components/Badge';
-import Button from '../components/Button';
-import { 
-  Bot, 
-  Zap, 
-  Target, 
-  Clock, 
-  AlertTriangle, 
-  CheckCircle2, 
-  XCircle,
-  RefreshCw,
-  Send,
-  Calendar,
-  Wallet,
-  ArrowRight,
-  ChevronDown,
-  TrendingUp,
-  Brain
-} from 'lucide-react';
-import { format, isAfter, setHours } from 'date-fns';
-import { motion, AnimatePresence } from 'framer-motion';
-import { clsx } from 'clsx';
+import React, { useState, useEffect, useRef } from 'react'
+import { useJarvisStore } from '../store/jarvisStore'
+import { useQuestStore } from '../store/questStore'
+import { supabase } from '../lib/supabase'
+import { collectFullContext } from '../lib/jarvisContext'
+import { speak, stopSpeaking } from '../lib/jarvisSpeech'
+import { getTimeUntilReady } from '../lib/gemini'
+import { motion, AnimatePresence } from 'framer-motion'
+import { format } from 'date-fns'
+import { clsx } from 'clsx'
+import {
+  Volume2, VolumeX, Mic, Send, RefreshCcw,
+  Target, TrendingUp, Trash2, ArrowRight, Clock, CheckCircle2
+} from 'lucide-react'
 
 const AIPlanner = () => {
-  const { todayPlan, history, loading, loadingMessage, error, loadPlans, generateTodayPlan, submitEveningReview } = useAiStore();
-  const { streakDays } = useXpStore();
-  const { balance } = useWalletStore();
-  const { activeQuests } = useQuestStore();
+  // --- TOP-LEVEL STATE ---
+  const [playerContext, setPlayerContext] = useState(null)
+  const [contextLoading, setContextLoading] = useState(true)
+  const [inputText, setInputText] = useState('')
+  const [isListening, setIsListening] = useState(false)
+  const [dayRating, setDayRating] = useState(null)  // 'solid' | 'okay' | 'rough'
+  const [debriefNotes, setDebriefNotes] = useState('')
+  const [questsVisible, setQuestsVisible] = useState(false)
+  const [rateLimitCooldown, setRateLimitCooldown] = useState(0) // seconds remaining
+  const [addedQuests, setAddedQuests] = useState(new Set())
+  const messagesEndRef = useRef(null)
 
-  const [reviewInput, setReviewInput] = useState('');
-  const [showHistory, setShowHistory] = useState(false);
+  // --- ZUSTAND STORE ---
+  const {
+    chatHistory, morningBrief, eveningReview, generatedQuests,
+    isGenerating, voiceEnabled,
+    toggleVoice, clearChat, sendMessage,
+    generateMorningBrief, generateEveningReview, generateDailyQuests
+  } = useJarvisStore()
 
+  const { loadQuests } = useQuestStore()
+
+
+  // --- useEffect 1: Load Context on Mount ---
   useEffect(() => {
-    loadPlans();
-  }, []);
+    const loadContext = async () => {
+      setContextLoading(true)
+      try {
+        const result = await collectFullContext()
+        setPlayerContext(result)
+        setContextLoading(false)
+        // No auto API call on mount — user initiates conversation
+      } catch (err) {
+        console.error('Jarvis Context Error:', err)
+        setContextLoading(false)
+      }
+    }
+    loadContext()
+  }, [])
 
-  const isEvening = useMemo(() => {
-    return isAfter(new Date(), setHours(new Date(), 18));
-  }, []);
+  // --- useEffect 2: Auto-scroll chat ---
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [chatHistory])
 
-  const handleGenerate = async () => {
-    await generateTodayPlan();
-  };
+  // --- useEffect 3: Rate limit cooldown ticker ---
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setRateLimitCooldown(getTimeUntilReady())
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [])
 
-  const handleReviewSubmit = async (e) => {
-    e.preventDefault();
-    if (!reviewInput.trim()) return;
-    await submitEveningReview(reviewInput);
-    setReviewInput('');
-  };
-
-  const prefillReview = (text) => {
-    setReviewInput(prev => prev ? `${prev} ${text}` : text);
-  };
-
-  if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-8">
-        <motion.div 
-          animate={{ scale: [1, 1.1, 1], rotate: [0, 5, -5, 0] }}
-          transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-          className="w-24 h-24 bg-navy-900 rounded-3xl flex items-center justify-center shadow-2xl shadow-navy-100"
-        >
-          <Bot className="w-12 h-12 text-white" />
-        </motion.div>
-        <div className="text-center space-y-2">
-          <p className="text-lg font-display font-bold text-slate-900 tracking-tight">{loadingMessage}</p>
-          <div className="flex justify-center gap-1.5">
-             {[0, 1, 2].map(i => (
-               <motion.div 
-                key={i}
-                animate={{ opacity: [0.3, 1, 0.3] }}
-                transition={{ duration: 1.5, repeat: Infinity, delay: i * 0.2 }}
-                className="w-1.5 h-1.5 rounded-full bg-navy-400" 
-               />
-             ))}
-          </div>
-        </div>
-      </div>
-    );
+  // --- ACTIONS ---
+  const handleSend = async () => {
+    if (!inputText.trim() || isGenerating) return
+    const text = inputText.trim()
+    setInputText('')
+    const response = await sendMessage(text, playerContext)
+    if (voiceEnabled && response) {
+      speak(response)
+    }
   }
 
+  const handleMic = () => {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (!Recognition) {
+      alert('Voice recognition not supported in this browser')
+      return
+    }
+
+    const recognition = new Recognition()
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.lang = 'en-IN'
+
+    recognition.onstart = () => setIsListening(true)
+    recognition.onresult = async (event) => {
+      const transcript = event.results[0][0].transcript
+      setInputText(transcript)
+      setIsListening(false)
+      // Pass transcript directly — don't rely on stale inputText state
+      const response = await sendMessage(transcript, playerContext)
+      if (voiceEnabled && response) {
+        speak(response)
+      }
+    }
+    recognition.onerror = () => setIsListening(false)
+    recognition.onend = () => setIsListening(false)
+    
+    recognition.start()
+  }
+
+  const handleBriefMe = async () => {
+    const response = await generateMorningBrief(playerContext)
+    if (voiceEnabled && response) {
+      speak(response)
+    }
+  }
+
+  const handleDebrief = async () => {
+    if (!dayRating) {
+      alert('Please select a day rating first')
+      return
+    }
+    await generateEveningReview(playerContext, dayRating, debriefNotes)
+  }
+
+  const handleGenerateQuests = async () => {
+    setAddedQuests(new Set())
+    await generateDailyQuests(playerContext)
+    setQuestsVisible(true)
+  }
+
+  const handleAddQuest = async (quest, index) => {
+    try {
+      const { error } = await supabase.from('quests').insert([{
+        title: quest.title,
+        description: quest.description,
+        xp_reward: quest.xp,
+        domain: quest.domain,
+        difficulty: quest.difficulty,
+        completed: false,
+        source: 'jarvis'
+      }])
+      if (error) throw error
+      setAddedQuests(prev => new Set([...prev, index]))
+      loadQuests(true) // force-refresh the quest store
+    } catch (err) {
+      console.error('Failed to add quest:', err)
+      alert('Failed to add quest. Try again.')
+    }
+  }
+
+  const showEveningDebrief = true // Always show as per requirements
+
+  const quickPrompts = [
+    'What should I focus on right now?',
+    "How's my progress today?",
+    'Generate my daily quests',
+    'Give me a trade review',
+    'Exam status update',
+    'Focus mode — what to do next?'
+  ]
+
   return (
-    <div className="max-w-4xl mx-auto space-y-12 pb-20">
-      
-      {/* Header */}
-      <div className="flex justify-between items-end">
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 font-['Inter'] text-[#1A1A2E]">
+
+      {/* PAGE HEADER */}
+      <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-[28px] font-display font-extrabold text-[#1A1A2E] leading-tight mb-1">AI COACH</h1>
-          <p className="text-slate-500 text-sm mt-1 font-medium">Daily plan + honest evening review</p>
+          <h1 className="text-3xl font-['Inter'] font-bold text-[#1A1A2E] tracking-tight uppercase">JARVIS</h1>
+          <p className="text-sm text-[#9A9590] font-['Inter']">Personal AI Assistant — Gemini 2.0 Flash</p>
         </div>
-        <Badge text={format(new Date(), 'EEEE, MMM do')} color="navy" />
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={toggleVoice} 
+            className={clsx(
+              'flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium transition-all border',
+              voiceEnabled 
+                ? 'bg-[#1A1A2E] text-white border-[#1A1A2E]' 
+                : 'bg-white border-gray-200 text-[#9A9590]'
+            )}
+          >
+            {voiceEnabled ? <Volume2 size={14}/> : <VolumeX size={14}/>}
+            {voiceEnabled ? 'VOICE ON' : 'VOICE OFF'}
+          </button>
+          <div className="flex items-center gap-2 text-sm text-[#9A9590] font-['Space_Mono'] font-bold">
+            <div className={clsx('w-2 h-2 rounded-full', contextLoading ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-500')}/>
+            {contextLoading ? 'LOADING...' : 'READY'}
+          </div>
+        </div>
       </div>
 
-      {error && (
-        <Card className="bg-rose-50 border-rose-100 p-4 flex items-center gap-3">
-          <AlertTriangle className="w-5 h-5 text-rose-500" />
-          <p className="text-sm font-medium text-rose-600">{error}</p>
-          <Button onClick={handleGenerate} variant="ghost" className="ml-auto text-rose-600">Retry</Button>
-        </Card>
-      )}
+      {/* TWO COLUMN LAYOUT */}
+      <div className="flex flex-col lg:flex-row gap-6">
 
-      {/* Morning Plan Section */}
-      <section className="space-y-6">
-        {!todayPlan?.morning_plan ? (
-          <Card className="p-12 text-center flex flex-col items-center border-navy-100 bg-white shadow-xl shadow-navy-100/10">
-            <div className="w-20 h-20 bg-slate-50 rounded-2xl flex items-center justify-center mb-6">
-              <Bot className="w-10 h-10 text-navy-900" />
+        {/* LEFT PANEL — Briefings (flex-1) */}
+        <div className="flex-1 flex flex-col gap-6">
+
+          {/* MORNING BRIEF CARD */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 transition-all hover:shadow-md">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xs font-['Space_Mono'] font-bold text-[#1A1A2E] tracking-widest uppercase">Morning Brief</h2>
+              <span className="text-xs text-[#9A9590] font-['Space_Mono']">{format(new Date(), 'HH:mm')}</span>
             </div>
-            <h2 className="text-2xl font-display font-bold text-slate-900 mb-2">Good morning, Abhishek</h2>
-            <p className="text-slate-500 font-medium mb-8">Ready to generate your battle plan for today?</p>
             
-            <div className="flex flex-wrap justify-center gap-3 mb-10">
-              <Badge text={`${activeQuests?.length || 0} quests pending`} color="label" />
-              <Badge text={`Streak: ${streakDays} days`} color="amber" />
-              <Badge text={`Wallet: ₹${(balance / 100).toFixed(0)}`} color="success" />
-              <Badge text="Exams ahead" color="danger" />
-            </div>
-
-            <Button onClick={handleGenerate} variant="primary" className="h-14 px-10 text-base shadow-xl shadow-navy-100">
-              GENERATE TODAY'S PLAN
-            </Button>
-          </Card>
-        ) : (
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-            <Card className="p-0 overflow-hidden border-navy-100 shadow-2xl">
-              <div className="bg-navy-900 p-6 flex justify-between items-center">
-                <div className="flex items-center gap-3">
-                  <Target className="w-5 h-5 text-amber-400" />
-                  <h2 className="text-sm font-bold text-white uppercase tracking-widest">Today's Battle Plan</h2>
-                </div>
-                <p className="text-[10px] font-bold text-navy-400 uppercase">
-                  Generated at {format(new Date(todayPlan.plan_generated_at), 'h:mm a')}
+            {!morningBrief ? (
+              <div className="text-center py-8">
+                <div className="text-8xl font-['Inter'] font-bold text-gray-100 mb-4 select-none">J</div>
+                <p className="text-lg font-['Inter'] font-bold text-[#1A1A2E] mb-1">
+                  {contextLoading ? 'Loading...' : `Good ${new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}, Abhishek.`}
                 </p>
-              </div>
-
-              <div className="p-8 space-y-8">
-                {/* Top Priority */}
-                <div className="bg-amber-50/50 border-l-4 border-amber-500 p-6 rounded-r-xl">
-                  <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-1">🎯 Top Priority Today</p>
-                  <p className="text-lg font-display font-bold text-slate-900">{todayPlan.morning_plan.top_priority}</p>
-                </div>
-
-                {/* Time Blocks */}
-                <div className="space-y-4">
-                  <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">Schedule</h3>
-                  <div className="space-y-3">
-                    {todayPlan.morning_plan.time_blocks.map((block, idx) => (
-                      <div key={idx} className="flex items-center gap-6 p-4 rounded-xl border border-slate-50 hover:border-navy-100 transition-all group">
-                        <div className="w-28 shrink-0">
-                          <span className="inline-block px-3 py-1 bg-navy-50 text-navy-700 text-[10px] font-bold rounded-full uppercase tracking-widest">
-                            {block.time}
-                          </span>
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-sm font-bold text-slate-800">{block.task}</p>
-                        </div>
-                        <div className="flex items-center gap-4">
-                           <Badge text={block.category} color="label" />
-                           <span className="text-[10px] font-mono font-bold text-xp">+{block.xp} XP</span>
-                        </div>
-                      </div>
-                    ))}
+                <p className="text-sm text-[#9A9590] mb-2 font-['Inter']">{format(new Date(), 'EEEE, MMMM do')}</p>
+                
+                {playerContext && (
+                  <div className="flex justify-center gap-2 mb-6">
+                    <span className="text-xs px-3 py-1 rounded-full bg-orange-50 text-orange-600 border border-orange-100 font-bold">
+                      🔥 Streak: {playerContext?.player?.streak || 0} days
+                    </span>
+                    <span className="text-xs px-3 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-100 font-bold">
+                      💰 ₹{playerContext?.wallet?.balance || 0}
+                    </span>
                   </div>
-                </div>
+                )}
+                
+                <button
+                  onClick={handleBriefMe}
+                  disabled={isGenerating || contextLoading}
+                  className="w-full bg-[#1A1A2E] text-white font-['Space_Mono'] font-bold tracking-widest py-3 rounded-xl hover:bg-[#2a2a4e] transition-all disabled:opacity-50"
+                >
+                  {isGenerating ? 'GENERATING...' : 'BRIEF ME'}
+                </button>
+              </div>
+            ) : (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="border-l-4 border-[#E07B39] pl-4"
+              >
+                <p className="text-sm font-['Inter'] text-[#1A1A2E] leading-relaxed whitespace-pre-wrap">{morningBrief}</p>
+                <button
+                  onClick={handleBriefMe}
+                  disabled={isGenerating}
+                  className="mt-4 text-xs text-[#9A9590] hover:text-[#E07B39] transition-colors flex items-center gap-1 font-bold uppercase tracking-wider"
+                >
+                  <RefreshCcw size={12}/> Regenerate
+                </button>
+              </motion.div>
+            )}
+          </div>
 
-                {/* Motivation & Warning */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-slate-50">
-                  <div className="space-y-2">
-                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Coach Notes</p>
-                    <p className="text-sm font-medium italic text-slate-600 leading-relaxed">
-                      "{todayPlan.morning_plan.motivation}"
+          {/* QUEST GENERATOR CARD */}
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 transition-all hover:shadow-md">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xs font-['Space_Mono'] font-bold text-[#1A1A2E] tracking-widest uppercase">Quest Generator</h2>
+              <Target size={16} className="text-[#E07B39]"/>
+            </div>
+            
+            <button
+              onClick={handleGenerateQuests}
+              disabled={isGenerating || contextLoading}
+              className="w-full bg-[#E07B39] text-white font-['Space_Mono'] font-bold tracking-widest py-3 rounded-xl hover:opacity-90 transition-all disabled:opacity-50 mb-4"
+            >
+              {isGenerating ? 'GENERATING...' : "GENERATE TODAY'S QUESTS"}
+            </button>
+
+            <AnimatePresence>
+              {questsVisible && generatedQuests.length > 0 && (
+                <div className="flex flex-col gap-3">
+                  {generatedQuests.map((quest, i) => (
+                    <motion.div
+                      key={i}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: i * 0.08 }}
+                      className="flex items-start justify-between p-3 rounded-xl bg-[#F5F4F0] border border-gray-100"
+                    >
+                      <div className="flex-1">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#1A1A2E] text-white font-['Space_Mono'] font-bold">{quest.domain}</span>
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-['Space_Mono'] font-bold">+{quest.xp} XP</span>
+                          <span className={clsx('text-[10px] px-2 py-0.5 rounded-full font-["Space_Mono"] font-bold',
+                            quest.difficulty === 'Hard' ? 'bg-red-50 text-red-600 border border-red-100' :
+                            quest.difficulty === 'Medium' ? 'bg-yellow-50 text-yellow-600 border border-yellow-100' :
+                            'bg-green-50 text-green-600 border border-green-100'
+                          )}>{quest.difficulty}</span>
+                        </div>
+                        <p className="text-sm font-['Inter'] font-bold text-[#1A1A2E]">{quest.title}</p>
+                        <p className="text-xs text-[#9A9590] font-['Inter'] mt-0.5 leading-snug">{quest.description}</p>
+                      </div>
+                      <button
+                        onClick={() => handleAddQuest(quest, i)}
+                        disabled={addedQuests.has(i)}
+                        className={clsx(
+                          'ml-3 text-[10px] px-2.5 py-1.5 rounded-lg flex items-center gap-1 font-bold whitespace-nowrap transition-all active:scale-95',
+                          addedQuests.has(i)
+                            ? 'bg-emerald-100 text-emerald-700 cursor-not-allowed'
+                            : 'bg-[#1A1A2E] text-white hover:bg-[#2a2a4e]'
+                        )}
+                      >
+                        {addedQuests.has(i)
+                          ? <><CheckCircle2 size={10}/> Added</>
+                          : <><ArrowRight size={10}/> Add</>
+                        }
+                      </button>
+                    </motion.div>
+                  ))}
+                </div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* EVENING DEBRIEF CARD */}
+          {showEveningDebrief && (
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6 transition-all hover:shadow-md">
+              <div className="flex justify-between items-center mb-4">
+                <h2 className="text-xs font-['Space_Mono'] font-bold text-[#1A1A2E] tracking-widest uppercase">Evening Debrief</h2>
+                <TrendingUp size={16} className="text-[#2D6A4F]"/>
+              </div>
+              
+              {playerContext && (
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div className="p-3 rounded-xl bg-[#F5F4F0] border border-gray-100">
+                    <p className="text-[10px] text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest mb-1 font-bold">Daily Progress</p>
+                    <p className="text-xl font-['Inter'] font-bold text-[#1A1A2E]">
+                      {playerContext?.today?.completedQuests || 0}/{playerContext?.today?.totalQuests || 0}
+                      <span className="text-xs font-normal ml-1">done</span>
                     </p>
                   </div>
-                  {todayPlan.morning_plan.warning && (
-                    <div className="bg-amber-50 border border-amber-100 p-4 rounded-xl flex gap-3">
-                      <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
-                      <p className="text-xs font-bold text-amber-700 leading-tight">
-                        {todayPlan.morning_plan.warning}
-                      </p>
-                    </div>
-                  )}
+                  <div className="p-3 rounded-xl bg-[#F5F4F0] border border-gray-100">
+                    <p className="text-[10px] text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest mb-1 font-bold">XP Earned</p>
+                    <p className="text-xl font-['Inter'] font-bold text-[#2D6A4F]">
+                      +{playerContext?.today?.xpEarnedToday || 0}
+                      <span className="text-xs font-normal ml-1">XP</span>
+                    </p>
+                  </div>
                 </div>
+              )}
+
+              <textarea
+                value={debriefNotes}
+                onChange={e => setDebriefNotes(e.target.value)}
+                placeholder="What happened today that the data doesn't show? (e.g., Felt distracted early on, but pushed through DSA late session.)"
+                className="w-full p-4 rounded-xl bg-[#F5F4F0] border border-gray-100 text-sm font-['Inter'] text-[#1A1A2E] placeholder-[#9A9590] resize-none focus:outline-none focus:border-[#E07B39] transition-all min-h-[120px] mb-4"
+              />
+              
+              <div className="flex gap-2 mb-4">
+                {[
+                  { value: 'solid', label: 'Solid day', icon: '✅' },
+                  { value: 'okay', label: 'Okay day', icon: '⚠️' },
+                  { value: 'rough', label: 'Rough day', icon: '❌' }
+                ].map(option => (
+                  <button
+                    key={option.value}
+                    onClick={() => setDayRating(option.value)}
+                    className={clsx(
+                      'flex-1 py-2.5 rounded-xl text-xs font-bold font-["Inter"] border transition-all',
+                      dayRating === option.value
+                        ? 'bg-[#1A1A2E] text-white border-[#1A1A2E] shadow-sm'
+                        : 'bg-white text-[#9A9590] border-gray-200 hover:border-[#1A1A2E]'
+                    )}
+                  >
+                    <span className="mr-1">{option.icon}</span> {option.label}
+                  </button>
+                ))}
               </div>
 
-              <div className="p-4 bg-slate-50 border-t border-slate-100 flex justify-end">
-                <Button onClick={() => handleGenerate()} variant="ghost" size="sm" className="text-navy-400 hover:text-navy-900 uppercase tracking-widest text-[9px] font-bold">
-                  <RefreshCw className="w-3 h-3 mr-2" /> REGENERATE PLAN
-                </Button>
-              </div>
-            </Card>
-          </motion.div>
-        )}
-      </section>
+              <button
+                onClick={handleDebrief}
+                disabled={isGenerating || !dayRating}
+                className="w-full bg-[#2D6A4F] text-white font-['Space_Mono'] font-bold tracking-widest py-3 rounded-xl hover:opacity-95 transition-all disabled:opacity-50 shadow-md active:scale-[0.98]"
+              >
+                {isGenerating ? 'GENERATING...' : 'GET DEBRIEF'}
+              </button>
 
-      {/* Evening Review Section */}
-      <section className="space-y-6 pt-6 border-t border-slate-100">
-        <div className="flex justify-between items-end">
-          <div>
-            <h2 className="text-[28px] font-display font-extrabold text-[#1A1A2E] leading-tight mb-1">EVENING DEBRIEF</h2>
-            <p className="text-slate-500 text-sm font-medium mt-1">Dump your day. Get brutal honest feedback.</p>
+              {eveningReview && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-4 border-l-4 border-[#2D6A4F] pl-4 bg-emerald-50/30 p-4 rounded-r-xl"
+                >
+                  <p className="text-sm font-['Inter'] text-[#1A1A2E] leading-relaxed whitespace-pre-wrap">{eveningReview}</p>
+                </motion.div>
+              )}
+            </div>
+          )}
+
+        </div>
+
+        {/* RIGHT PANEL — Chat (sticky) */}
+        <div className="w-full lg:w-[460px] lg:sticky lg:top-6 lg:self-start">
+          <div className="bg-white rounded-2xl border border-gray-100 shadow-xl flex flex-col overflow-hidden" style={{ height: 'calc(100vh - 120px)', minHeight: '600px' }}>
+            
+            {/* Chat header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-100 bg-white/80 backdrop-blur-md">
+              <div className="flex items-center gap-3">
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"/>
+                <h2 className="text-xs font-['Space_Mono'] font-bold text-[#1A1A2E] tracking-widest uppercase">Talk to JARVIS</h2>
+              </div>
+              <button 
+                onClick={clearChat} 
+                className="p-2 rounded-lg hover:bg-red-50 text-[#9A9590] hover:text-red-500 transition-colors"
+                title="Clear History"
+              >
+                <Trash2 size={16}/>
+              </button>
+            </div>
+
+            {/* Messages area */}
+            <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 bg-[#fcfcfb]">
+              {chatHistory.length === 0 && !isGenerating && (
+                <div className="flex-1 flex flex-col items-center justify-center gap-3">
+                  <div className="text-6xl font-['Inter'] font-bold text-gray-100 select-none">J</div>
+                  <p className="text-xs text-[#9A9590] font-['Space_Mono'] text-center">
+                    {contextLoading ? 'INITIALIZING SYSTEMS...' : 'JARVIS READY — SAY SOMETHING'}
+                  </p>
+                </div>
+              )}
+
+              {chatHistory.map(msg => (
+                <motion.div
+                  key={msg.id}
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className={clsx('flex', msg.role === 'user' ? 'justify-end' : 'justify-start')}
+                >
+                  <div className={clsx(
+                    'max-w-[85%] px-4 py-3 rounded-2xl text-sm font-["Inter"] leading-relaxed shadow-sm',
+                    msg.role === 'user'
+                      ? 'bg-[#1A1A2E] text-white rounded-tr-sm'
+                      : 'bg-white text-[#3D3830] border-l-4 border-[#E07B39] rounded-tl-sm border border-gray-100'
+                  )}>
+                    <p className="whitespace-pre-wrap">{msg.text}</p>
+                    <p className={clsx('text-[10px] mt-1 font-bold font-["Space_Mono"] uppercase tracking-tighter text-right', msg.role === 'user' ? 'text-white/40' : 'text-[#9A9590]')}>
+                      {format(new Date(msg.timestamp), 'HH:mm')}
+                    </p>
+                  </div>
+                </motion.div>
+              ))}
+
+              {isGenerating && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
+                  <div className="bg-white border-l-4 border-[#E07B39] px-4 py-3 rounded-2xl rounded-tl-sm border border-gray-100 shadow-sm">
+                    <div className="flex gap-1.5 items-center h-4">
+                      <div className="w-1.5 h-1.5 bg-[#E07B39] rounded-full animate-bounce" style={{animationDelay:'0ms'}}/>
+                      <div className="w-1.5 h-1.5 bg-[#E07B39] rounded-full animate-bounce" style={{animationDelay:'150ms'}}/>
+                      <div className="w-1.5 h-1.5 bg-[#E07B39] rounded-full animate-bounce" style={{animationDelay:'300ms'}}/>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+
+              <div ref={messagesEndRef}/>
+            </div>
+
+            {/* Quick prompts */}
+            <div className="px-4 py-3 border-t border-gray-50 bg-white">
+              <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+                {quickPrompts.map((prompt, i) => (
+                  <button
+                    key={i}
+                    onClick={() => { setInputText(prompt); }}
+                    className="whitespace-nowrap text-[10px] font-bold uppercase tracking-wider px-3 py-2 rounded-full bg-[#F5F4F0] text-[#9A9590] hover:bg-[#1A1A2E] hover:text-white transition-all border border-transparent hover:border-[#1A1A2E] font-['Space_Mono']"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Input area */}
+            <div className="border-t border-gray-100 bg-white">
+              {/* Rate limit cooldown banner */}
+              <AnimatePresence>
+                {rateLimitCooldown > 0 && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    className="flex items-center gap-2 px-4 py-2 bg-orange-50 border-b border-orange-100"
+                  >
+                    <Clock size={13} className="text-[#E07B39] shrink-0" />
+                    <p className="text-xs font-['Space_Mono'] font-bold text-[#E07B39] uppercase tracking-wider">
+                      Rate limited — ready in {rateLimitCooldown}s
+                    </p>
+                    <div className="flex-1 h-1 bg-orange-100 rounded-full overflow-hidden">
+                      <motion.div
+                        className="h-full bg-[#E07B39] rounded-full"
+                        initial={{ width: '100%' }}
+                        animate={{ width: `${(rateLimitCooldown / 60) * 100}%` }}
+                        transition={{ duration: 1, ease: 'linear' }}
+                      />
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              <div className="p-4 flex gap-2 items-end">
+                <textarea
+                  value={inputText}
+                  onChange={e => setInputText(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                  placeholder={rateLimitCooldown > 0 ? `Cooling down... ${rateLimitCooldown}s` : "Ask JARVIS anything..."}
+                  rows={1}
+                  disabled={rateLimitCooldown > 0}
+                  className={clsx(
+                    "flex-1 p-3.5 rounded-xl border border-transparent text-sm font-['Inter'] text-[#1A1A2E] placeholder-[#9A9590] resize-none focus:outline-none transition-all",
+                    rateLimitCooldown > 0
+                      ? 'bg-orange-50 placeholder-orange-300 cursor-not-allowed'
+                      : 'bg-[#F5F4F0] focus:border-[#E07B39]'
+                  )}
+                />
+                <button
+                  onClick={handleMic}
+                  disabled={isGenerating || rateLimitCooldown > 0}
+                  className={clsx(
+                    'p-3.5 rounded-xl transition-all shadow-sm',
+                    isListening 
+                      ? 'bg-red-500 text-white animate-pulse' 
+                      : 'bg-[#F5F4F0] text-[#9A9590] hover:bg-[#1A1A2E] hover:text-white active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed'
+                  )}
+                >
+                  <Mic size={18}/>
+                </button>
+                <button
+                  onClick={handleSend}
+                  disabled={isGenerating || !inputText.trim() || rateLimitCooldown > 0}
+                  className="p-3.5 rounded-xl bg-[#1A1A2E] text-white hover:bg-[#2a2a4e] transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-lg active:scale-95"
+                >
+                  <Send size={18}/>
+                </button>
+              </div>
+            </div>
+
+
           </div>
         </div>
 
-        {!todayPlan?.evening_review ? (
-          <div className={clsx("space-y-6", !isEvening && "opacity-50 grayscale pointer-events-none")}>
-            <Card className="p-8">
-              <form onSubmit={handleReviewSubmit} className="space-y-6">
-                <div className="space-y-3">
-                  <textarea 
-                    value={reviewInput}
-                    onChange={(e) => setReviewInput(e.target.value)}
-                    placeholder="How did today go? What did you actually do? What did you skip and why? Be honest..."
-                    className="w-full h-40 bg-slate-50 border border-slate-100 rounded-2xl p-6 text-sm font-medium focus:ring-2 focus:ring-navy-100 outline-none resize-none transition-all placeholder:text-slate-300"
-                  />
-                  <div className="flex gap-2">
-                    <button type="button" onClick={() => prefillReview('Solid day. Hit all major targets.')} className="px-4 py-2 bg-slate-100 rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-success hover:text-white transition-all">Solid day ✅</button>
-                    <button type="button" onClick={() => prefillReview('Okay day. Procrastinated a bit on SDE.')} className="px-4 py-2 bg-slate-100 rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-amber-400 hover:text-white transition-all">Okay day ⚠️</button>
-                    <button type="button" onClick={() => prefillReview('Rough day. Motivation was zero, need better sleep.')} className="px-4 py-2 bg-slate-100 rounded-lg text-[10px] font-bold uppercase tracking-widest hover:bg-rose-500 hover:text-white transition-all">Rough day ❌</button>
-                  </div>
-                </div>
-                <Button type="submit" variant="primary" className="w-full h-14 text-sm tracking-widest shadow-xl shadow-navy-100">
-                  SUBMIT FOR REVIEW
-                </Button>
-              </form>
-            </Card>
-            {!isEvening && (
-               <p className="text-center text-xs font-bold text-slate-400 uppercase tracking-widest">Reveals at 6:00 PM</p>
-            )}
-          </div>
-        ) : (
-          <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }}>
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
-              {/* Day Score */}
-              <Card className="md:col-span-4 p-8 flex flex-col items-center justify-center text-center bg-white border-navy-100 shadow-xl">
-                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Discipline Score</p>
-                 <h3 className={clsx(
-                   "text-7xl font-display font-bold mb-4",
-                   todayPlan.evening_review.score >= 8 ? "text-success" : 
-                   todayPlan.evening_review.score >= 5 ? "text-amber-500" : "text-rose-500"
-                 )}>
-                   {todayPlan.evening_review.score}<span className="text-xl text-slate-300">/10</span>
-                 </h3>
-                 <div className="space-y-4 w-full pt-6 border-t border-slate-50">
-                    <div>
-                       <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Today's Earnings</p>
-                       <p className="text-lg font-mono font-bold text-success">+{todayPlan.evening_review.rupee_summary}</p>
-                    </div>
-                 </div>
-              </Card>
-
-              {/* Analysis */}
-              <div className="md:col-span-8 space-y-6">
-                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <Card className="p-6 border-l-4 border-success">
-                       <h4 className="text-[10px] font-bold text-success uppercase tracking-widest mb-4">Wins</h4>
-                       <ul className="space-y-2">
-                         {todayPlan.evening_review.wins.map((win, i) => (
-                           <li key={i} className="text-xs font-bold text-slate-700 flex items-start gap-2">
-                             <CheckCircle2 className="w-3.5 h-3.5 text-success shrink-0" /> {win}
-                           </li>
-                         ))}
-                       </ul>
-                    </Card>
-                    <Card className="p-6 border-l-4 border-rose-500">
-                       <h4 className="text-[10px] font-bold text-rose-500 uppercase tracking-widest mb-4">Misses</h4>
-                       <ul className="space-y-2">
-                         {todayPlan.evening_review.misses.map((miss, i) => (
-                           <li key={i} className="text-xs font-bold text-slate-700 flex items-start gap-2">
-                             <XCircle className="w-3.5 h-3.5 text-rose-500 shrink-0" /> {miss}
-                           </li>
-                         ))}
-                       </ul>
-                    </Card>
-                 </div>
-
-                 <Card className="p-6 bg-amber-50/50 border-amber-100">
-                    <p className="text-[10px] font-bold text-amber-600 uppercase tracking-widest mb-2 italic">Biggest Bottleneck</p>
-                    <p className="text-sm font-bold text-slate-900 italic">"{todayPlan.evening_review.biggest_bottleneck}"</p>
-                 </Card>
-
-                 <Card className="p-6 bg-navy-900 border-none relative overflow-hidden">
-                    <div className="relative z-10">
-                       <p className="text-[10px] font-bold text-navy-400 uppercase tracking-widest mb-2">🎯 Focus Tomorrow On</p>
-                       <p className="text-sm font-bold text-white">{todayPlan.evening_review.tomorrow_priority}</p>
-                    </div>
-                    <ArrowRight className="absolute right-4 bottom-4 w-8 h-8 text-navy-800" />
-                 </Card>
-              </div>
-
-              {/* Honest Feedback */}
-              <Card className="md:col-span-12 p-8 bg-slate-50 border-slate-100 italic">
-                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4 not-italic">Coach's Honest Feedback</p>
-                 <p className="text-sm font-bold text-slate-700 leading-relaxed">
-                   "{todayPlan.evening_review.honest_feedback}"
-                 </p>
-                 <p className="text-[10px] font-bold text-slate-400 uppercase mt-4 not-italic">— No sugarcoating. This is what you needed to hear.</p>
-              </Card>
-            </div>
-          </motion.div>
-        )}
-      </section>
-
-      {/* History */}
-      <section className="space-y-6">
-         <button 
-           onClick={() => setShowHistory(!showHistory)}
-           className="w-full flex items-center justify-between p-4 bg-white border border-slate-100 rounded-xl hover:bg-slate-50 transition-all group"
-         >
-            <div className="flex items-center gap-3">
-              <Calendar className="w-4 h-4 text-slate-400" />
-              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-widest">Past 7 Days Review</h3>
-            </div>
-            <ChevronDown className={clsx("w-4 h-4 transition-transform", showHistory && "rotate-180")} />
-         </button>
-
-         <AnimatePresence>
-           {showHistory && (
-             <motion.div 
-               initial={{ height: 0, opacity: 0 }}
-               animate={{ height: 'auto', opacity: 1 }}
-               exit={{ height: 0, opacity: 0 }}
-               className="overflow-hidden"
-             >
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 pt-4">
-                   {history.filter(p => p.evening_review).map(day => (
-                     <motion.div key={day.id} className="p-5 hover:border-navy-200 transition-all group cursor-pointer border border-slate-100 rounded-2xl bg-white">
-                        <div className="flex justify-between items-start mb-4">
-                           <p className="text-xs font-bold text-slate-900">{format(new Date(day.plan_date), 'EEE, MMM do')}</p>
-                           <span className={clsx(
-                             "text-lg font-display font-bold",
-                             day.day_score >= 8 ? "text-success" : "text-amber-500"
-                           )}>{day.day_score}/10</span>
-                        </div>
-                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Top Priority</p>
-                        <p className="text-[11px] font-bold text-slate-700 line-clamp-1 mb-3">{day.morning_plan.top_priority}</p>
-                        <div className="flex items-center gap-2 pt-3 border-t border-slate-50">
-                           <Wallet className="w-3 h-3 text-emerald-500" />
-                           <span className="text-[10px] font-mono font-bold text-emerald-600">+{day.evening_review.rupee_summary}</span>
-                        </div>
-                     </motion.div>
-                   ))}
-                </div>
-             </motion.div>
-           )}
-         </AnimatePresence>
-      </section>
-
+      </div>
     </div>
-  );
-};
+  )
+}
 
 export default AIPlanner;

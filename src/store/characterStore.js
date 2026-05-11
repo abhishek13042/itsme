@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 import { awardXP } from '../lib/xpEngine';
-import { seedCharacterSystem } from '../lib/characterSeeder';
+import { calculateAllStats } from '../lib/statCalculator';
+import { triggerJarvisToast } from '../components/JarvisToast';
+import { getJarvisLine } from '../lib/jarvisReactions';
 
 export const useCharacterStore = create((set, get) => ({
   stats: {
@@ -15,18 +17,38 @@ export const useCharacterStore = create((set, get) => ({
   badges: [],
   brainLogs: [],
   xpEvents: [],
+  playerState: null,
   loading: false,
+  lastLoaded: null,
 
   loadCharacterData: async () => {
+    if (get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
     set({ loading: true });
     try {
-      await seedCharacterSystem();
-      
+      // 1. Get Player State (contains calculated stats)
       const { data: player } = await supabase.from('player_state').select('*').single();
-      const { data: bLogs } = await supabase.from('brain_logs').select('*').order('created_at', { ascending: false });
-      const { data: xLogs } = await supabase.from('xp_log').select('*').order('created_at', { ascending: false }).limit(50);
+      
+      // 2. Load Brain Logs (Last 30 for charts)
+      const { data: bLogs } = await supabase
+        .from('brain_logs')
+        .select('*')
+        .order('logged_at', { ascending: false });
+
+      // 3. Load All Badges
+      const { data: allBadges } = await supabase
+        .from('badges')
+        .select('*')
+        .order('order_index', { ascending: true });
+
+      // 4. Load XP Log (Last 20 for history)
+      const { data: xLogs } = await supabase
+        .from('xp_log')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(20);
 
       set({ 
+        playerState: player,
         stats: {
           dsa: player?.stat_dsa || 0,
           sysdesign: player?.stat_sysdesign || 0,
@@ -35,52 +57,76 @@ export const useCharacterStore = create((set, get) => ({
           physique: player?.stat_physique || 0,
           analytical: player?.stat_analytical || 0
         },
-        badges: player?.badges || [],
+        badges: allBadges || [],
         brainLogs: bLogs || [],
         xpEvents: xLogs || [],
-        loading: false 
+        loading: false,
+        lastLoaded: Date.now()
       });
+
+      // Recalculate stats on load to keep them fresh
+      const newStats = await calculateAllStats();
+      if (newStats) set({ stats: newStats });
+
     } catch (err) {
       console.error('Failed to load character data:', err);
       set({ loading: false });
     }
   },
 
-  updateStat: async (statName, value) => {
-    try {
-      const colName = `stat_${statName}`;
-      await supabase.from('player_state').update({ [colName]: value }).eq('id', (await supabase.from('player_state').select('id').single()).data.id);
-      
-      set(state => ({
-        stats: { ...state.stats, [statName]: value }
-      }));
-    } catch (err) {
-      console.error('Failed to update stat:', err);
-    }
+  recalculate: async () => {
+    set({ loading: true });
+    const newStats = await calculateAllStats();
+    if (newStats) set({ stats: newStats });
+    set({ loading: false });
   },
 
-  logBrainWin: async (entry) => {
+  submitBrainLog: async (entry) => {
     try {
-      const { data, error } = await supabase.from('brain_logs').insert([entry]).select().single();
-      if (!error) {
-        set(state => ({ brainLogs: [data, ...state.brainLogs] }));
-        await awardXP(20, 'character:deep_thinker_session');
-        
-        // Milestone logic: check if 10 or 30 logs
-        const count = get().brainLogs.length;
-        if (count === 10 || count === 30) {
-            const badgeName = count === 30 ? 'Deep Thinker' : 'Mind Pushed';
-            const { data: player } = await supabase.from('player_state').select('badges, id').single();
-            if (player && !player.badges?.includes(badgeName)) {
-                await supabase.from('player_state')
-                  .update({ badges: [...(player.badges || []), badgeName] })
-                  .eq('id', player.id);
-                set(state => ({ badges: [...state.badges, badgeName] }));
-            }
-        }
-      }
+      const { data, error } = await supabase
+        .from('brain_logs')
+        .insert([{
+          ...entry,
+          xp_awarded: 20
+        }])
+        .select()
+        .single();
+      
+      if (error) throw error;
+
+      // Add to local state
+      set(state => ({ brainLogs: [data, ...state.brainLogs] }));
+      
+      // Award XP
+      await awardXP(20, 'character:brain_log');
+      
+      // Recalculate stats
+      await get().recalculate();
+      
+      triggerJarvisToast({
+        type: 'info',
+        title: 'BRAIN LOG',
+        xp: 20,
+        message: `${entry.topic} — recorded.`,
+        duration: 3000
+      });
+      getJarvisLine('brain_log', { 
+        minutes: entry.minutes_pushed, 
+        topic: entry.topic 
+      }).then(line => {
+        if (line) triggerJarvisToast({
+          type: 'info',
+          title: 'BRAIN LOG',
+          xp: 20,
+          jarvisLine: line,
+          duration: 3000
+        });
+      });
+
+      return { success: true, data };
     } catch (err) {
-      console.error('Failed to log brain win:', err);
+      console.error('Failed to log brain session:', err);
+      return { success: false, error: err };
     }
   }
 }));
