@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { getNextMilestone } from '../lib/levelMilestones';
 import { useCharacterStore } from '../store/characterStore';
 import { useXpStore } from '../store/xpStore';
 import { 
@@ -17,8 +18,11 @@ import { clsx } from 'clsx';
 const CharacterSheet = () => {
   const { 
     stats, badges, brainLogs, xpEvents, playerState, 
-    loading, loadCharacterData, recalculate, submitBrainLog 
+    loading, isLoading, brainLogsHasMore, loadCharacterData, 
+    loadMoreBrainLogs, recalculate, submitBrainLog 
   } = useCharacterStore();
+
+  const { xpLog, xpLogHasMore, loadMoreXpLogs } = useXpStore();
 
   const { streakDays } = useXpStore();
 
@@ -39,7 +43,7 @@ const CharacterSheet = () => {
   const [submitFeedback, setSubmitFeedback] = useState(null);
 
   useEffect(() => {
-    loadCharacterData();
+    if (!playerState) loadCharacterData();
   }, []);
 
   // === DERIVED XP DATA ===
@@ -109,8 +113,20 @@ const CharacterSheet = () => {
     );
   }
 
+  if (isLoading && !playerState) {
+    return (
+      <div className="flex-1 p-6 space-y-4">
+        <div className="h-6 bg-[#F5F4F0] animate-pulse rounded w-1/3 mb-8" />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="h-96 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-96 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6">
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6 max-w-7xl mx-auto">
       
       {/* ── PAGE HEADER ── */}
       <div className="mb-6">
@@ -138,6 +154,24 @@ const CharacterSheet = () => {
             </span>
           )}
         </div>
+        
+        {getNextMilestone(level) && (() => {
+          const nextMilestone = getNextMilestone(level);
+          return (
+            <div className="mt-4 bg-[#F5F4F0] rounded-xl p-3 border border-[#E5E0D8] inline-block max-w-sm">
+              <p className="text-[9px] font-bold text-[#9A9590] 
+                font-['Space_Mono'] uppercase tracking-widest mb-1">
+                Next Milestone — Level {nextMilestone.level}
+              </p>
+              <p className="text-xs font-bold text-[#1A1A2E] font-['Inter']">
+                {nextMilestone.icon} {nextMilestone.title}
+              </p>
+              <p className="text-[10px] text-[#9A9590] font-['Inter'] mt-0.5">
+                Unlocks: {nextMilestone.unlock}
+              </p>
+            </div>
+          );
+        })()}
       </div>
 
       <div className="flex flex-col lg:flex-row gap-6 mb-6">
@@ -351,12 +385,12 @@ const CharacterSheet = () => {
             Recent Thinking Sessions
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {brainLogs.slice(0, 4).map((log, i) => (
+            {brainLogs.map((log, i) => (
               <motion.div 
-                key={i}
+                key={log.id || i}
                 initial={{ opacity: 0, x: 10 }}
                 animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: i * 0.05 }}
+                transition={{ delay: i * 0.02 }}
                 className="bg-white rounded-2xl border border-[#E5E0D8] p-4 border-l-4 border-l-[#E07B39] shadow-sm"
               >
                 <div className="flex justify-between items-start mb-2">
@@ -379,7 +413,17 @@ const CharacterSheet = () => {
               </motion.div>
             ))}
           </div>
-          <Card className="p-8 mt-4 h-[180px]">
+          {brainLogsHasMore && (
+            <button
+              onClick={loadMoreBrainLogs}
+              className="w-full py-3 text-[10px] font-bold text-[#9A9590] 
+                font-['Space_Mono'] uppercase tracking-widest 
+                hover:text-[#1A1A2E] transition-colors"
+            >
+              Load More Sessions
+            </button>
+          )}
+          <div className="bg-white p-8 mt-4 h-[180px] border border-[#E5E0D8] rounded-2xl shadow-sm">
              <div className="w-full h-full">
                <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={lineData}>
@@ -392,7 +436,7 @@ const CharacterSheet = () => {
                   </AreaChart>
                </ResponsiveContainer>
              </div>
-          </Card>
+          </div>
         </div>
       </div>
 
@@ -480,7 +524,7 @@ const CharacterSheet = () => {
               className="overflow-hidden mt-4"
             >
               <div className="bg-white rounded-2xl border border-[#E5E0D8] divide-y divide-[#F5F4F0]">
-                {xpEvents.slice(0, 10).map((log, i) => (
+                {xpLog.map((log, i) => (
                   <div key={i} className="flex items-center justify-between p-4 hover:bg-[#F5F4F0] transition-all">
                     <div className="flex items-center gap-4">
                       <span className="font-mono text-[10px] text-[#9A9590] w-12">{format(new Date(log.created_at), 'MM/dd')}</span>
@@ -492,6 +536,16 @@ const CharacterSheet = () => {
                     </div>
                   </div>
                 ))}
+                {xpLogHasMore && (
+                  <button
+                    onClick={loadMoreXpLogs}
+                    className="w-full py-4 text-[10px] font-bold text-[#9A9590] 
+                      font-['Space_Mono'] uppercase tracking-widest 
+                      hover:text-[#1A1A2E] transition-colors border-t border-[#F5F4F0]"
+                  >
+                    Load More Activity
+                  </button>
+                )}
                 <div className="p-4 text-center">
                    <p className="text-[10px] font-bold text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest">
                      Lifetime Earnings: {playerState?.total_xp_alltime?.toLocaleString()} XP

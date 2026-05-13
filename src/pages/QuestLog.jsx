@@ -27,9 +27,9 @@ const QuestLog = () => {
 
   const {
     dailyQuests, todayCompletions, questClusters,
-    isGeneratingClusters, clustersGeneratedAt, clustersApproved,
+    isLoading, isGeneratingClusters, clustersGeneratedAt, clustersApproved,
     addDailyQuest, completeDaily, deleteDailyQuest,
-    loadQuestClusters, generateQuestClusters, approveCluster,
+    loadQuests, loadDailyQuests, loadQuestClusters, generateQuestClusters, approveCluster,
     approveAllClusters
   } = useQuestStore();
 
@@ -39,7 +39,9 @@ const QuestLog = () => {
   const { balance } = useWalletStore();
 
   useEffect(() => {
-    loadQuestClusters();
+    if (!questClusters?.length) loadQuestClusters();
+    if (!dailyQuests?.length) loadDailyQuests();
+    if (!todayCompletions?.length) loadDailyQuests(); // Also ensure completions are loaded
   }, []);
 
   const handleGenerateClusters = async () => {
@@ -66,8 +68,21 @@ const QuestLog = () => {
   const clustersAreToday = clustersGeneratedAt
     ?.startsWith(todayStr);
 
+  if (isLoading && !questClusters?.length) {
+    return (
+      <div className="flex-1 p-6 space-y-4">
+        <div className="h-6 bg-[#E5E0D8] animate-pulse rounded w-1/3 mb-8" />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="h-64 bg-[#E5E0D8] animate-pulse rounded-2xl" />
+          <div className="h-64 bg-[#E5E0D8] animate-pulse rounded-2xl" />
+        </div>
+        <div className="h-96 bg-[#E5E0D8] animate-pulse rounded-2xl" />
+      </div>
+    );
+  }
+
   return (
-    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6">
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6 max-w-7xl mx-auto">
 
       {/* HEADER */}
       <div className="flex items-start justify-between mb-6">

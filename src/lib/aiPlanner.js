@@ -1,4 +1,4 @@
-import { generateText } from './gemini.js';
+import { generateText } from './groq.js';
 import { supabase } from './supabase.js';
 
 const COACH_SYSTEM_PROMPT = `You are PLAYER ONE's AI coach 

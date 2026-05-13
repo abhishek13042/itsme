@@ -4,7 +4,7 @@ import { useQuestStore } from '../store/questStore'
 import { supabase } from '../lib/supabase'
 import { collectFullContext } from '../lib/jarvisContext'
 import { speak, stopSpeaking } from '../lib/jarvisSpeech'
-import { getTimeUntilReady } from '../lib/gemini'
+import { getTimeUntilReady } from '../lib/groq'
 import { motion, AnimatePresence } from 'framer-motion'
 import { format } from 'date-fns'
 import { clsx } from 'clsx'
@@ -29,7 +29,7 @@ const AIPlanner = () => {
   // --- ZUSTAND STORE ---
   const {
     chatHistory, morningBrief, eveningReview, generatedQuests,
-    isGenerating, voiceEnabled,
+    isGenerating, voiceEnabled, isStreaming, streamingContent,
     toggleVoice, clearChat, sendMessage,
     generateMorningBrief, generateEveningReview, generateDailyQuests
   } = useJarvisStore()
@@ -435,7 +435,7 @@ const AIPlanner = () => {
                 </motion.div>
               ))}
 
-              {isGenerating && (
+              {isGenerating && !isStreaming && (
                 <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
                   <div className="bg-white border-l-4 border-[#E07B39] px-4 py-3 rounded-2xl rounded-tl-sm border border-gray-100 shadow-sm">
                     <div className="flex gap-1.5 items-center h-4">
@@ -445,6 +445,24 @@ const AIPlanner = () => {
                     </div>
                   </div>
                 </motion.div>
+              )}
+
+              {isStreaming && streamingContent && (
+                <div className="flex gap-3">
+                  <div className="w-7 h-7 bg-[#1A1A2E] rounded-lg 
+                    flex items-center justify-center shrink-0">
+                    <span className="text-white text-[10px]">J</span>
+                  </div>
+                  <div className="bg-white border border-[#E5E0D8] rounded-2xl 
+                    rounded-tl-sm px-4 py-3 max-w-[85%]">
+                    <p className="text-sm text-[#1A1A2E] font-['Inter'] 
+                      leading-relaxed whitespace-pre-wrap">
+                      {streamingContent}
+                      <span className="inline-block w-1 h-4 bg-[#E07B39] 
+                        ml-0.5 animate-pulse"/>
+                    </p>
+                  </div>
+                </div>
               )}
 
               <div ref={messagesEndRef}/>

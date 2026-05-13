@@ -19,20 +19,23 @@ export const useCharacterStore = create((set, get) => ({
   xpEvents: [],
   playerState: null,
   loading: false,
+  isLoading: false,
   lastLoaded: null,
+  brainLogsPage: 0,
+  brainLogsHasMore: true,
+  PAGE_SIZE: 20,
 
   loadCharacterData: async () => {
     if (get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
-    set({ loading: true });
+    set({ loading: true, isLoading: true });
     try {
       // 1. Get Player State (contains calculated stats)
       const { data: player } = await supabase.from('player_state').select('*').single();
       
-      // 2. Load Brain Logs (Last 30 for charts)
-      const { data: bLogs } = await supabase
-        .from('brain_logs')
-        .select('*')
-        .order('logged_at', { ascending: false });
+      // 2. Load Brain Logs (Paginated)
+      if (get().brainLogs.length === 0) {
+        await get().loadMoreBrainLogs();
+      }
 
       // 3. Load All Badges
       const { data: allBadges } = await supabase
@@ -58,9 +61,10 @@ export const useCharacterStore = create((set, get) => ({
           analytical: player?.stat_analytical || 0
         },
         badges: allBadges || [],
-        brainLogs: bLogs || [],
+        brainLogs: get().brainLogs, // Use already loaded logs
         xpEvents: xLogs || [],
         loading: false,
+        isLoading: false,
         lastLoaded: Date.now()
       });
 
@@ -70,7 +74,29 @@ export const useCharacterStore = create((set, get) => ({
 
     } catch (err) {
       console.error('Failed to load character data:', err);
-      set({ loading: false });
+      set({ loading: false, isLoading: false });
+    }
+  },
+
+  loadMoreBrainLogs: async () => {
+    const { brainLogsPage, brainLogs, PAGE_SIZE } = get()
+    const from = brainLogsPage * PAGE_SIZE
+    const to = from + PAGE_SIZE - 1
+    
+    const { data, error } = await supabase
+      .from('brain_logs')
+      .select('*')
+      .order('logged_at', { ascending: false })
+      .range(from, to)
+    
+    if (!error && data) {
+      set(state => ({
+        brainLogs: brainLogsPage === 0 
+          ? data 
+          : [...state.brainLogs, ...data],
+        brainLogsPage: brainLogsPage + 1,
+        brainLogsHasMore: data.length === PAGE_SIZE
+      }))
     }
   },
 

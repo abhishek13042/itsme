@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { useHealthStore } from '../store/healthStore';
 import { useXpStore } from '../store/xpStore';
 import { useWalletStore } from '../store/walletStore';
@@ -43,7 +44,11 @@ import { clsx } from 'clsx';
 import { awardXP } from '../lib/xpEngine';
 
 const Health = () => {
-  const { todayLog, history, milestones, loading, loadHealthData, updateLog, toggleMilestone, submitDay } = useHealthStore();
+  const { todayLog, history, milestones, loading, isLoading, loadHealthData, updateLog, toggleMilestone, submitDay } = useHealthStore();
+
+  useEffect(() => {
+    if (!todayLog) loadHealthData();
+  }, []);
   const { streakDays, loadPlayerState } = useXpStore();
   const { loadWallet } = useWalletStore();
   const [dailyAiTip, setDailyAiTip] = useState('')
@@ -58,6 +63,28 @@ const Health = () => {
 
   const [physiqueLogs, setPhysiqueLogs] = useState([]);
   const [latestMeasurement, setLatestMeasurement] = useState(null);
+  const [activeMetric, setActiveMetric] = useState('weight')
+
+  const metricConfig = {
+    weight: { label: 'Weight (kg)', color: '#1A1A2E' },
+    waist: { label: 'Waist (cm)', color: '#C0392B' },
+    chest: { label: 'Chest (cm)', color: '#E07B39' },
+    arms: { label: 'Arms (cm)', color: '#1A6B4A' }
+  }
+
+  const physiqueChartData = useMemo(() => {
+    return [...(physiqueLogs || [])]
+      .sort((a, b) => new Date(a.log_date) - new Date(b.log_date))
+      .slice(-12)
+      .map(log => ({
+        date: new Date(log.log_date).toLocaleDateString('en-IN', 
+          { day: '2-digit', month: 'short' }),
+        weight: log.weight_kg,
+        waist: log.waist_cm,
+        chest: log.chest_cm,
+        arms: log.arms_cm
+      }))
+  }, [physiqueLogs])
   const [measurementForm, setMeasurementForm] = useState({
     weight_kg: '', chest_cm: '', waist_cm: '',
     arms_cm: '', forearms_cm: '', shoulders_cm: '', notes: ''
@@ -165,27 +192,17 @@ const Health = () => {
       Logged exercises: ${exerciseLogs.map(e => `${e.exercise_name} (${e.sets}x${e.reps} @ ${e.weight_kg}kg)`).join(', ') || 'None yet'}.
       Remember: He is a strict vegetarian. Focus on paneer, soya, pulses, milk, and whey for protein.`;
 
-      const response = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [
-            { role: 'system', content: context },
-            ...chatMessages.slice(-5),
-            userMsg
-          ],
-          max_tokens: 500,
-          temperature: 0.7
-        })
+      const { callGroq } = await import('../lib/groq');
+      const result = await callGroq({
+        messages: [
+          { role: 'system', content: context },
+          ...chatMessages.slice(-5),
+          userMsg
+        ],
+        max_tokens: 500,
+        temperature: 0.7
       });
-      
-      const data = await response.json();
-      const text = data.choices[0].message.content;
+      const text = result.text;
       setChatMessages(prev => [...prev, { role: 'assistant', content: text }]);
     } catch (err) {
       console.error('Chat error:', err);
@@ -314,22 +331,13 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
         cost: `Abhishek wants to build a shredded physique on a student budget in Nagpur as a VEGETARIAN. Monthly health spend optimization. Current spend: ₹${totalCost}/month. Give him: 1) Minimum monthly budget for veg protein (soya, paneer, whey), 2) Best value veg protein in India. Max 250 words.`
       };
 
-      const response = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'user', content: prompts[promptType] }],
-          max_tokens: 800,
-          temperature: 0.7
-        })
+      const { callGroq } = await import('../lib/groq');
+      const result = await callGroq({
+        messages: [{ role: 'user', content: prompts[promptType] }],
+        max_tokens: 800,
+        temperature: 0.7
       });
-      const data = await response.json();
-      const text = data.choices[0].message.content;
+      const text = result.text;
       setAiCoachResponse(text);
       setLastCoachSession(new Date().toISOString());
 
@@ -366,22 +374,13 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
       move the needle today for his physique goal. 
       Consider his vegetarian+egg diet when relevant.`
 
-      const response = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 150,
-          temperature: 0.8
-        })
+      const { callGroq } = await import('../lib/groq')
+      const result = await callGroq({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 150,
+        temperature: 0.8
       })
-      const data = await response.json()
-      setDailyAiTip(data.choices[0].message.content)
+      setDailyAiTip(result.text)
       setTipGenerated(true)
     } catch (err) {
       console.error('daily tip error:', err)
@@ -635,6 +634,19 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
     </div>
   );
 
+
+  if (isLoading && !todayLog) {
+    return (
+      <div className="flex-1 p-6 space-y-4">
+        <div className="h-6 bg-[#F5F4F0] animate-pulse rounded w-1/3 mb-8" />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="h-48 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-48 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+        </div>
+        <div className="h-64 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen pb-20 space-y-12 max-w-7xl mx-auto px-4 md:px-8 bg-[#F5F4F0] font-body text-[#3D3830]">
@@ -1320,6 +1332,63 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
               </p>
             </div>
           </div>
+
+          {/* Physique Progress Trend */}
+          {physiqueChartData.length > 1 ? (
+            <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+              <div className="flex items-center justify-between mb-4">
+                <p className="text-[10px] font-bold text-[#9A9590] 
+                  font-['Space_Mono'] uppercase tracking-widest">
+                  Progress Trend
+                </p>
+                <div className="flex gap-1">
+                  {Object.entries(metricConfig).map(([key, cfg]) => (
+                    <button
+                      key={key}
+                      onClick={() => setActiveMetric(key)}
+                      className={`px-2.5 py-1 rounded-lg text-[9px] font-bold 
+                        font-['Space_Mono'] uppercase tracking-wider transition-all
+                        ${activeMetric === key 
+                          ? 'text-white' 
+                          : 'bg-[#F5F4F0] text-[#9A9590]'}`}
+                      style={activeMetric === key 
+                        ? { backgroundColor: cfg.color } 
+                        : {}}
+                    >
+                      {key}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <ResponsiveContainer width="100%" height={160}>
+                <LineChart data={physiqueChartData}>
+                  <XAxis dataKey="date" tick={{ fontSize: 9, 
+                    fontFamily: 'Space Mono', fill: '#9A9590' }} 
+                    axisLine={false} tickLine={false}/>
+                  <YAxis tick={{ fontSize: 9, fontFamily: 'Space Mono', 
+                    fill: '#9A9590' }} axisLine={false} tickLine={false} 
+                    width={35}/>
+                  <Tooltip contentStyle={{ fontSize: 11, 
+                    fontFamily: 'Space Mono', borderRadius: 8,
+                    border: '1px solid #E5E0D8' }}/>
+                  <Line
+                    type="monotone"
+                    dataKey={activeMetric}
+                    stroke={metricConfig[activeMetric].color}
+                    strokeWidth={2}
+                    dot={{ fill: metricConfig[activeMetric].color, r: 3 }}
+                    activeDot={{ r: 5 }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="bg-[#F5F4F0] rounded-xl p-4 text-center">
+              <p className="text-xs text-[#9A9590] font-['Inter']">
+                Log 2+ measurements to see your trend chart
+              </p>
+            </div>
+          )}
 
           {/* MEASUREMENTS TRACKER */}
           <div className="bg-white rounded-2xl border border-[#E5E0D8] p-6">

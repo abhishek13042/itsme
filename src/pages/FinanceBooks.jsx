@@ -35,6 +35,7 @@ const FinanceBooks = () => {
     curiosityNodes, 
     readingStreak, 
     loading, 
+    isLoading,
     loadFinanceData, 
     startBook, 
     completeBook, 
@@ -48,8 +49,8 @@ const FinanceBooks = () => {
   const [showCompleteModal, setShowCompleteModal] = useState(null);
 
   useEffect(() => {
-    loadFinanceData();
-    loadSde();
+    if (!books?.length) loadFinanceData();
+    if (!chapters?.length) loadSde();
   }, []);
 
   // Stats
@@ -89,10 +90,23 @@ const FinanceBooks = () => {
     else setExpandedPhases([...expandedPhases, p]);
   };
 
-  if (loading && books.length === 0) return <div className="p-12 animate-pulse font-mono text-muted text-center mt-20">SYNCING LIBRARIES...</div>;
+  if (isLoading && !books?.length) {
+    return (
+      <div className="flex-1 p-6 space-y-4">
+        <div className="h-6 bg-[#F5F4F0] animate-pulse rounded w-1/3 mb-8" />
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="h-24 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-24 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-24 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-24 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+        </div>
+        <div className="h-96 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-12 pb-20 max-w-7xl mx-auto px-4 md:px-8 bg-[#F5F4F0] font-body text-[#3D3830]">
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6 max-w-7xl mx-auto">
       
       {/* HEADER */}
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center pt-8 gap-4">

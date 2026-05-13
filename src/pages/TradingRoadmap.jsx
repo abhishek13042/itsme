@@ -43,7 +43,10 @@ const TradingRoadmap = () => {
     moneyEntries, 
     withdrawals, 
     loading, 
+    isLoading,
+    tradesHasMore,
     loadTradingData, 
+    loadMoreTrades,
     logTrade, 
     addJournalEntry,
     addMoneyEntry,
@@ -70,7 +73,7 @@ const TradingRoadmap = () => {
   const tvContainerRef = useRef(null);
 
   useEffect(() => {
-    loadTradingData();
+    if (!trades?.length) loadTradingData();
   }, []);
 
   // TradingView Widget initialization
@@ -198,12 +201,21 @@ const TradingRoadmap = () => {
     return timeInMinutes >= (13 * 60 + 30) && timeInMinutes <= (22 * 60 + 30);
   };
 
-  if (loading && trades.length === 0) {
-    return <div className="p-12 animate-pulse text-[#7A7A7A] font-mono">LOADING TERMINAL...</div>;
+  if (isLoading && !trades?.length) {
+    return (
+      <div className="flex-1 p-6 space-y-4">
+        <div className="h-6 bg-[#F5F4F0] animate-pulse rounded w-1/3 mb-8" />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="h-48 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-48 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+        </div>
+        <div className="h-96 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+      </div>
+    );
   }
 
   return (
-    <div className="min-h-screen bg-[#F5F4F0] pb-24 font-sans text-[#2D2D2D]">
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6 max-w-7xl mx-auto">
       
       {/* HEADER */}
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10">
@@ -674,6 +686,16 @@ const TradingRoadmap = () => {
               </table>
            </div>
         </Card>
+        {tradesHasMore && (
+          <button
+            onClick={loadMoreTrades}
+            className="w-full py-4 text-xs font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-wider 
+              hover:text-[#1A1A2E] transition-colors"
+          >
+            Load More Trades
+          </button>
+        )}
       </section>
 
       {/* SECTION 5 — TRADE JOURNAL */}

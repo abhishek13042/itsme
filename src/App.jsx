@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar';
 import BottomNav from './components/BottomNav';
 import JarvisToast from './components/JarvisToast';
 import LevelUpEvent from './components/LevelUpEvent';
+import ErrorBoundary from './components/ErrorBoundary';
 const CommandCenter = React.lazy(() => import('./pages/CommandCenter'));
 const Tracker = React.lazy(() => import('./pages/Tracker'));
 const QuestLog = React.lazy(() => import('./pages/QuestLog'));
@@ -19,6 +20,7 @@ const Pomodoro = React.lazy(() => import('./pages/Pomodoro'));
 const Settings = React.lazy(() => import('./pages/Settings'));
 const Explorer = React.lazy(() => import('./pages/Explorer'));
 const AIEngineerTrack = React.lazy(() => import('./pages/AIEngineerTrack'));
+const WeeklyReview = React.lazy(() => import('./pages/WeeklyReview'));
 
 import { useSettingsStore } from './store/settingsStore';
 import { useXpStore } from './store/xpStore';
@@ -74,19 +76,12 @@ function App() {
       }, 250);
 
       try {
-        // Run all critical data fetches in parallel for maximum speed
+        // Run only critical data fetches on boot
         await Promise.all([
           loadSettings(),
           loadPlayerState(),
           loadWallet(),
-          loadQuests(),
-          checkStreak(),
-          loadHealthData(),
-          loadRoadmap(),
-          loadSemesters(),
-          loadTradingData(),
-          loadCharacterData(),
-          loadFinanceData()
+          checkStreak()
         ]);
       } catch (err) {
         console.error("System initialization failed:", err);
@@ -176,20 +171,21 @@ function App() {
             </div>
           }>
             <Routes>
-              <Route path="/" element={<CommandCenter />} />
-              <Route path="/tracker" element={<Tracker />} />
-              <Route path="/quests" element={<QuestLog />} />
-              <Route path="/character" element={<CharacterSheet />} />
-              <Route path="/sde" element={<SDERoadmap />} />
-              <Route path="/trading" element={<TradingRoadmap />} />
-              <Route path="/exams" element={<ExamMode />} />
-              <Route path="/health" element={<Health />} />
-              <Route path="/finance" element={<FinanceBooks />} />
-              <Route path="/planner" element={<AIPlanner />} />
-              <Route path="/pomodoro" element={<Pomodoro />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/explorer" element={<Explorer />} />
-              <Route path="/ai-track" element={<AIEngineerTrack />} />
+              <Route path="/" element={<ErrorBoundary><CommandCenter /></ErrorBoundary>} />
+              <Route path="/tracker" element={<ErrorBoundary><Tracker /></ErrorBoundary>} />
+              <Route path="/quests" element={<ErrorBoundary><QuestLog /></ErrorBoundary>} />
+              <Route path="/character" element={<ErrorBoundary><CharacterSheet /></ErrorBoundary>} />
+              <Route path="/sde" element={<ErrorBoundary><SDERoadmap /></ErrorBoundary>} />
+              <Route path="/trading" element={<ErrorBoundary><TradingRoadmap /></ErrorBoundary>} />
+              <Route path="/exams" element={<ErrorBoundary><ExamMode /></ErrorBoundary>} />
+              <Route path="/health" element={<ErrorBoundary><Health /></ErrorBoundary>} />
+              <Route path="/finance" element={<ErrorBoundary><FinanceBooks /></ErrorBoundary>} />
+              <Route path="/planner" element={<ErrorBoundary><AIPlanner /></ErrorBoundary>} />
+              <Route path="/pomodoro" element={<ErrorBoundary><Pomodoro /></ErrorBoundary>} />
+              <Route path="/settings" element={<ErrorBoundary><Settings /></ErrorBoundary>} />
+              <Route path="/explorer" element={<ErrorBoundary><Explorer /></ErrorBoundary>} />
+              <Route path="/ai-track" element={<ErrorBoundary><AIEngineerTrack /></ErrorBoundary>} />
+              <Route path="/weekly" element={<ErrorBoundary><WeeklyReview /></ErrorBoundary>} />
             </Routes>
           </Suspense>
         </div>

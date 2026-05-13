@@ -93,6 +93,15 @@ const JarvisToast = () => {
                     "{toast.jarvisLine}"
                   </p>
                 )}
+
+                {toast.onAction && (
+                  <button onClick={toast.onAction} 
+                    className="text-[9px] font-bold text-white/80 
+                      font-['Space_Mono'] uppercase tracking-wider 
+                      underline mt-1 block">
+                    Undo
+                  </button>
+                )}
               </div>
 
               {/* Close */}

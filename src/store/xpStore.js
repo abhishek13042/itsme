@@ -13,11 +13,15 @@ export const useXpStore = create((set, get) => ({
   badges: [],
   xpLog: [],
   loading: false,
+  isLoading: false,
   lastLoaded: null,
+  xpLogPage: 0,
+  xpLogHasMore: true,
+  PAGE_SIZE: 20,
 
   loadPlayerState: async (force = false) => {
     if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
-    set({ loading: true });
+    set({ loading: true, isLoading: true });
     try {
       const { data: player, error } = await supabase
         .from('player_state')
@@ -45,11 +49,9 @@ export const useXpStore = create((set, get) => ({
         return;
       }
 
-      const { data: logs } = await supabase
-        .from('xp_log')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(20);
+      if (get().xpLog.length === 0) {
+        await get().loadMoreXpLogs();
+      }
 
       if (player) {
         set({
@@ -58,14 +60,37 @@ export const useXpStore = create((set, get) => ({
           streakDays: player.streak_days,
           multiplier: getStreakMultiplier(player.streak_days),
           badges: player.badges || [],
-          xpLog: logs || [],
+          xpLog: get().xpLog,
           loading: false,
+          isLoading: false,
           lastLoaded: Date.now()
         });
       }
     } catch (err) {
-      console.error('Failed to load player XP state:', err);
-      set({ loading: false });
+      console.error('Failed to load player state:', err);
+      set({ loading: false, isLoading: false });
+    }
+  },
+
+  loadMoreXpLogs: async () => {
+    const { xpLogPage, xpLog, PAGE_SIZE } = get()
+    const from = xpLogPage * PAGE_SIZE
+    const to = from + PAGE_SIZE - 1
+    
+    const { data, error } = await supabase
+      .from('xp_log')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .range(from, to)
+    
+    if (!error && data) {
+      set(state => ({
+        xpLog: xpLogPage === 0 
+          ? data 
+          : [...state.xpLog, ...data],
+        xpLogPage: xpLogPage + 1,
+        xpLogHasMore: data.length === PAGE_SIZE
+      }))
     }
   },
 

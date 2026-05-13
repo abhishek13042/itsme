@@ -46,21 +46,13 @@ async function getJarvisLine(event, data) {
   }
 
   try {
-    const response = await fetch(GROQ_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`
-      },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'user', content: prompts[event] }],
-        max_tokens: 40,
-        temperature: 0.9
-      })
+    const { callGroq } = await import('./groq')
+    const result = await callGroq({
+      messages: [{ role: 'user', content: prompts[event] }],
+      max_tokens: 40,
+      temperature: 0.9
     })
-    const data2 = await response.json()
-    return data2.choices[0].message.content.trim()
+    return result.text.trim()
   } catch (err) {
     // Fallback lines if Groq fails
     const fallbacks = {

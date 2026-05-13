@@ -23,7 +23,8 @@ import {
   Flame,
   Wallet,
   Compass,
-  GraduationCap
+  GraduationCap,
+  BarChart2
 } from 'lucide-react';
 
 const Sidebar = () => {
@@ -239,6 +240,7 @@ const Sidebar = () => {
           { to: '/tracker', icon: CalendarCheck, label: 'Tracker' },
           { to: '/quests', icon: Sword, label: 'Quest Log' },
           { to: '/character', icon: User, label: 'Character Sheet' },
+          { to: '/weekly', icon: BarChart2, label: 'Weekly Review' },
         ].map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}

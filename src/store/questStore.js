@@ -20,12 +20,15 @@ export const useQuestStore = create((set, get) => ({
   weeklyProgress: 0,
   penalties: [],
   loading: false,
+  isLoading: false,
+  recentlyDeleted: [],
+  deleteTimeouts: {},
   lastLoaded: null,
   lastDailiesLoaded: null,
 
   loadQuests: async (force = false) => {
     if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
-    set({ loading: true });
+    set({ loading: true, isLoading: true });
     try {
       const { data: allQuests, error } = await supabase
         .from('quests')
@@ -41,11 +44,12 @@ export const useQuestStore = create((set, get) => ({
         activeQuests: active, 
         completedQuests: completed,
         loading: false,
+        isLoading: false,
         lastLoaded: Date.now()
       });
     } catch (err) {
       console.error('Failed to load quests:', err);
-      set({ loading: false });
+      set({ loading: false, isLoading: false });
     }
   },
 
@@ -123,11 +127,24 @@ export const useQuestStore = create((set, get) => ({
   },
 
   completeDaily: async (questId) => {
+    const previousCompletions = [...get().todayCompletions];
+    
+    // Optimistic Update
+    set(state => ({
+      todayCompletions: [...state.todayCompletions, questId]
+    }));
+
     try {
       const { completeDailyQuest } = await import('../lib/questEngine');
       const result = await completeDailyQuest(questId);
-      if (result.alreadyCompleted) return result;
-      
+
+      if (!result.success) {
+        // Rollback
+        set({ todayCompletions: previousCompletions });
+        throw new Error(result.error);
+      }
+
+      // Refresh data
       await get().loadDailyQuests();
 
       // Fire toast
@@ -181,6 +198,7 @@ export const useQuestStore = create((set, get) => ({
       return result;
     } catch (err) {
       console.error('Failed to complete daily:', err);
+      set({ todayCompletions: previousCompletions });
       throw err;
     }
   },
@@ -203,17 +221,57 @@ export const useQuestStore = create((set, get) => ({
   },
 
   deleteDailyQuest: async (questId) => {
-    try {
-      const { error } = await supabase
-        .from('daily_quests')
-        .update({ is_active: false })
-        .eq('id', questId);
-      
-      if (error) throw error;
-      set(state => ({ dailyQuests: state.dailyQuests.filter(q => q.id !== questId) }));
-    } catch (err) {
-      console.error('Failed to delete daily quest:', err);
-      throw err;
+    // Optimistic: remove from UI
+    const deletedQuest = get().dailyQuests.find(q => q.id === questId)
+    set(state => ({
+      dailyQuests: state.dailyQuests.filter(q => q.id !== questId),
+      recentlyDeleted: [...(state.recentlyDeleted || []), deletedQuest]
+    }))
+
+    // Show undo toast for 5 seconds before actual delete
+    triggerJarvisToast({
+      type: 'warning',
+      title: 'Quest Deleted',
+      message: 'Tap to undo',
+      duration: 5000,
+      onAction: () => get().undoDelete(questId)
+    })
+
+    const deleteTimeout = setTimeout(async () => {
+      await supabase.from('daily_quests').delete().eq('id', questId)
+      set(state => ({
+        recentlyDeleted: state.recentlyDeleted.filter(q => q.id !== questId)
+      }))
+    }, 5000)
+
+    // Store timeout reference
+    set(state => ({
+      deleteTimeouts: { 
+        ...(state.deleteTimeouts || {}), 
+        [questId]: deleteTimeout 
+      }
+    }))
+  },
+
+  undoDelete: (questId) => {
+    const { recentlyDeleted, deleteTimeouts } = get()
+    
+    // Cancel the timeout
+    if (deleteTimeouts?.[questId]) {
+      clearTimeout(deleteTimeouts[questId])
+    }
+    
+    // Restore to UI
+    const quest = recentlyDeleted?.find(q => q.id === questId)
+    if (quest) {
+      set(state => ({
+        dailyQuests: [...state.dailyQuests, quest],
+        recentlyDeleted: state.recentlyDeleted.filter(q => q.id !== questId),
+        deleteTimeouts: Object.fromEntries(
+          Object.entries(state.deleteTimeouts || {})
+            .filter(([k]) => k !== questId)
+        )
+      }))
     }
   },
 
@@ -313,23 +371,13 @@ export const useQuestStore = create((set, get) => ({
 
       Generate exactly 5 clusters with 2-4 quests each.`
 
-      const response = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 2000,
-          temperature: 0.85
-        })
+      const { callGroq } = await import('../lib/groq')
+      const result = await callGroq({ 
+        messages: [{ role: 'user', content: prompt }], 
+        max_tokens: 2000,
+        temperature: 0.85
       })
-
-      const data = await response.json()
-      const raw = data.choices[0].message.content
+      const raw = result.text
       const cleaned = raw.replace(/```json|```/g, '').trim()
       const clusters = JSON.parse(cleaned)
 

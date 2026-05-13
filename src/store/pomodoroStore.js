@@ -35,6 +35,10 @@ export const usePomodoroStore = create((set, get) => ({
   history: [],
   weeklyData: [],
   loading: false,
+  isRunning: false,
+  startedAt: null,
+  expectedEndAt: null,
+  currentDuration: 25, // Fallback for startTimer calculation
 
   loadPomodoroData: async () => {
     set({ loading: true });
@@ -129,13 +133,22 @@ export const usePomodoroStore = create((set, get) => ({
       dbId = data?.id;
     }
 
+    const now = Date.now();
+    const durationMs = timer.timeLeft * 1000;
+
     set(state => ({
+      isRunning: true,
+      startedAt: now,
+      expectedEndAt: now + durationMs,
       timers: state.timers.map(t => t.id === id ? { ...t, isRunning: true, dbSessionId: dbId } : t)
     }));
   },
 
   pauseTimer: (id) => {
     set(state => ({
+      isRunning: false,
+      startedAt: null,
+      expectedEndAt: null,
       timers: state.timers.map(t => t.id === id ? { ...t, isRunning: false } : t)
     }));
   },
@@ -149,7 +162,10 @@ export const usePomodoroStore = create((set, get) => ({
         ...t, 
         timeLeft: t.isBreak ? mode.break * 60 : mode.work * 60,
         isRunning: false 
-      } : t)
+      } : t),
+      isRunning: false,
+      startedAt: null,
+      expectedEndAt: null
     }));
   },
 
@@ -171,30 +187,7 @@ export const usePomodoroStore = create((set, get) => ({
     }));
   },
 
-  tick: () => {
-    const { timers, completePhase } = get();
-    timers.forEach(t => {
-      if (t.isRunning) {
-        if (t.timeLeft > 0) {
-          set(state => ({
-            timers: state.timers.map(timer => timer.id === t.id ? { ...timer, timeLeft: timer.timeLeft - 1 } : timer)
-          }));
-        } else {
-          completePhase(t.id);
-        }
-      }
-    });
-
-    // Update Tab Title based on first running timer
-    const active = timers.find(t => t.isRunning);
-    if (active) {
-      const mins = Math.floor(active.timeLeft / 60);
-      const secs = active.timeLeft % 60;
-      document.title = `${mins}:${secs < 10 ? '0' : ''}${secs} — ${active.isBreak ? 'Break' : 'Focus'}`;
-    } else {
-      document.title = "Player One";
-    }
-  },
+  // tick is removed in favor of visibility-aware component approach
 
   completePhase: async (id) => {
     const timer = get().timers.find(t => t.id === id);
@@ -223,7 +216,10 @@ export const usePomodoroStore = create((set, get) => ({
           timeLeft: breakTime * 60,
           isRunning: focusSettings.auto_start_breaks,
           dbSessionId: null // Reset for next work session
-        } : t)
+        } : t),
+        isRunning: focusSettings.auto_start_breaks,
+        startedAt: focusSettings.auto_start_breaks ? Date.now() : null,
+        expectedEndAt: focusSettings.auto_start_breaks ? Date.now() + (breakTime * 60 * 1000) : null
       }));
       
       await loadPomodoroData();
@@ -236,7 +232,10 @@ export const usePomodoroStore = create((set, get) => ({
           timeLeft: mode.work * 60,
           sessionCount: t.sessionCount + 1,
           isRunning: focusSettings.auto_start_pomodoros
-        } : t)
+        } : t),
+        isRunning: focusSettings.auto_start_pomodoros,
+        startedAt: focusSettings.auto_start_pomodoros ? Date.now() : null,
+        expectedEndAt: focusSettings.auto_start_pomodoros ? Date.now() + (mode.work * 60 * 1000) : null
       }));
     }
   },

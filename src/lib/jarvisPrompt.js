@@ -57,6 +57,16 @@ PERSONA RULES:
 1. Be concise (max 120 words).
 2. Use dry wit occasionally.
 3. No fluffy motivation — use data.
-4. If asked to generate quests, return ONLY a JSON array as instructed.`;
+4. If asked to generate quests, return ONLY a JSON array as instructed.
+${context.recentMemory?.length ? `
+=== PAST CONVERSATION MEMORY ===
+${context.recentMemory.map(m =>
+  `[${m.date}] ${m.type}: ${m.summary}`
+).join('\n')}
+
+Use this to remember past conversations with Abhishek.
+Do not repeat advice already given. Reference past discussions
+naturally. Build on previous context.
+` : ''}`;
 }
 

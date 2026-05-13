@@ -7,11 +7,12 @@ export const useSdeStore = create((set, get) => ({
   chapters: [],
   dsaSolved: 0,
   loading: false,
+  isLoading: false,
   lastLoaded: null,
 
   loadRoadmap: async () => {
     if (get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
-    set({ loading: true });
+    set({ loading: true, isLoading: true });
     try {
       await seedSdeRoadmap(); // Ensure table is seeded
       
@@ -31,11 +32,12 @@ export const useSdeStore = create((set, get) => ({
         chapters: chapters || [], 
         dsaSolved: player?.stat_dsa_solved || 0,
         loading: false,
+        isLoading: false,
         lastLoaded: Date.now()
       });
     } catch (err) {
       console.error('Failed to load SDE roadmap:', err);
-      set({ loading: false });
+      set({ loading: false, isLoading: false });
     }
   },
 

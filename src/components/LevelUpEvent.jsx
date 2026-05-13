@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Zap, Star, X } from 'lucide-react'
+import { getMilestoneForLevel } from '../lib/levelMilestones'
 
 // Module-level callback
 let levelUpCallback = null
@@ -173,6 +174,34 @@ const LevelUpEvent = () => {
                 </p>
               </div>
             </motion.div>
+
+            {/* Milestone Unlock */}
+            {getMilestoneForLevel(event.newLevel) && (() => {
+              const milestone = getMilestoneForLevel(event.newLevel);
+              return (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.8 }}
+                  className="mt-4 bg-white/10 rounded-2xl px-6 py-4 
+                    border border-white/20 mb-6 max-w-sm"
+                >
+                  <p className="text-[9px] font-bold text-white/50 
+                    font-['Space_Mono'] uppercase tracking-widest mb-1">
+                    Milestone Unlocked
+                  </p>
+                  <p className="text-lg text-white font-bold font-['Inter'] mb-1">
+                    {milestone.icon} {milestone.title}
+                  </p>
+                  <p className="text-xs text-white/70 font-['Inter']">
+                    {milestone.unlock}
+                  </p>
+                  <p className="text-xs text-white/50 font-['Inter'] mt-1">
+                    {milestone.description}
+                  </p>
+                </motion.div>
+              );
+            })()}
 
             {/* Title */}
             <motion.p

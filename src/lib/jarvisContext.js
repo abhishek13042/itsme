@@ -74,6 +74,19 @@ export async function collectFullContext() {
       // Format SDE
       const sdeSolvedToday = sdeData.filter(p => p.completed_at?.startsWith(todayDate)).length;
       
+      const { data: memories } = await supabase
+        .from('ai_sessions')
+        .select('type, ai_response, user_input, session_date')
+        .order('session_date', { ascending: false })
+        .limit(20)
+
+      const memorySnapshot = (memories || []).map(m => ({
+        date: m.session_date,
+        type: m.type,
+        summary: m.ai_response?.substring(0, 200),
+        userInput: m.user_input?.substring(0, 100)
+      }))
+
       return {
         player: playerData ? {
           level: playerData.level || 1,
@@ -123,7 +136,8 @@ export async function collectFullContext() {
           workoutType: healthData?.workout_type || 'General',
           currentStreak: playerData?.streak_days || 0,
           lastWorkout: healthData?.log_date
-        }
+        },
+        recentMemory: memorySnapshot
       };
     } catch (err) {
       console.error('Inner fetch error:', err);
@@ -144,7 +158,8 @@ export async function collectFullContext() {
         sde: {},
         brainLogs: [],
         trades: [],
-        health: {}
+        health: {},
+        recentMemory: []
       };
     }
     return result;
@@ -159,7 +174,8 @@ export async function collectFullContext() {
       sde: {},
       brainLogs: [],
       trades: [],
-      health: {}
+      health: {},
+      recentMemory: []
     };
   }
 }

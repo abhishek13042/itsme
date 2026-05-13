@@ -8,11 +8,12 @@ export const useHealthStore = create((set, get) => ({
   history: [],
   milestones: [],
   loading: false,
+  isLoading: false,
   lastLoaded: null,
 
   loadHealthData: async (force = false) => {
     if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
-    set({ loading: true });
+    set({ loading: true, isLoading: true });
     try {
       const today = new Date().toISOString().split('T')[0];
 
@@ -42,48 +43,42 @@ export const useHealthStore = create((set, get) => ({
         history: history || [],
         milestones: milestones || [],
         loading: false,
+        isLoading: false,
         lastLoaded: Date.now()
       });
     } catch (err) {
       console.error('Failed to load health data:', err);
-      set({ loading: false });
+      set({ loading: false, isLoading: false });
     }
   },
 
-  updateLog: async (updates) => {
-    const { todayLog } = get();
-    // Calculate new stats if fields are toggled
-    const newLog = { ...todayLog, ...updates };
+  updateLog: async (field, value) => {
+    const previousLog = { ...get().todayLog };
     
-    // Count active checks (excluding metadata fields)
+    // Count active checks for score
     const checkFields = [
       'gym_done', 'meal_1_done', 'meal_2_done', 'protein_hit', 'no_junk_before_6pm',
       'slept_by_midnight', 'woke_by_630', 'bath_done', 'bed_made', 'teeth_brushed',
       'skincare_am', 'skincare_pm', 'study_table_organised'
     ];
     
+    const newLog = { ...previousLog, [field]: value };
     newLog.total_checks = checkFields.filter(f => newLog[f]).length;
-    newLog.day_score = Math.floor((newLog.total_checks / newLog.total_possible) * 100);
-    
-    // Simple reward calculation (₹1-₹6 per habit based on user spec)
-    // We'll calculate the difference in earnings
-    const prevScore = todayLog.total_checks;
-    const newScore = newLog.total_checks;
-    
+    newLog.day_score = Math.floor((newLog.total_checks / (newLog.total_possible || 13)) * 100);
+
+    // Optimistic Update
+    set({ todayLog: newLog });
+
     try {
-      const { data, error } = await supabase
-        .from('health_logs')
-        .upsert(newLog)
-        .select()
-        .single();
-      
-      if (!error) {
-        set({ todayLog: data });
-        // Optional: Trigger XP/Gold on each toggle instead of just on submit if preferred by spec
-        // The spec says "On toggle ON: +25 XP toast, +₹6 wallet update" for gym, etc.
+      const { error } = await supabase.from('health_logs').upsert(newLog);
+
+      if (error) {
+        set({ todayLog: previousLog });
+        throw error;
       }
     } catch (err) {
-      console.error('Failed to update health log:', err);
+      console.error('Failed to update log:', err);
+      set({ todayLog: previousLog });
     }
   },
 

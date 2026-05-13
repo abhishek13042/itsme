@@ -7,6 +7,31 @@ export function getTimeUntilReady() {
   return remaining > 0 ? remaining : 0;
 }
 
+export async function callGroq({ messages, max_tokens = 1000, temperature = 0.7, systemPrompt = null }) {
+  if (systemPrompt) {
+    messages = [{ role: 'system', content: systemPrompt }, ...messages]
+  }
+  try {
+    const res = await fetch('/api/groq/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages,
+        max_tokens,
+        temperature
+      })
+    })
+    const data = await res.json()
+    return { 
+      text: data.choices?.[0]?.message?.content || '', 
+      error: null 
+    }
+  } catch (err) {
+    return { text: '', error: err.message }
+  }
+}
+
 async function generateText(systemPrompt, userPrompt) {
   // Cooldown guard
   const cooldown = getTimeUntilReady();
@@ -22,11 +47,10 @@ async function generateText(systemPrompt, userPrompt) {
   isProcessing = true;
 
   try {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const response = await fetch('/api/groq/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         model: 'llama-3.3-70b-versatile',
@@ -49,7 +73,7 @@ async function generateText(systemPrompt, userPrompt) {
       }
       if (response.status === 401) {
         isProcessing = false;
-        return "API key error. Check that VITE_GROQ_API_KEY is set correctly in your .env file.";
+        return "API key error. Check proxy configuration.";
       }
       throw new Error(data?.error?.message || `HTTP ${response.status}`);
     }

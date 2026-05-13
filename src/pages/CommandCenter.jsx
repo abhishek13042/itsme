@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { supabase } from '../lib/supabase';
 import { useXpStore } from '../store/xpStore';
 import { useQuestStore } from '../store/questStore';
 import { useWalletStore } from '../store/walletStore';
@@ -22,6 +23,9 @@ const CommandCenter = () => {
   const [greetingGenerated, setGreetingGenerated] = useState(false);
   const [focusTask, setFocusTask] = useState('');
   const [focusLoading, setFocusLoading] = useState(false);
+  const [digest, setDigest] = useState(null)
+  const [isGeneratingDigest, setIsGeneratingDigest] = useState(false)
+  const [digestExpanded, setDigestExpanded] = useState(false)
 
   // === STORE CONNECTIONS ===
   const { xp, level, streakDays } = useXpStore();
@@ -58,6 +62,66 @@ const CommandCenter = () => {
   const healthScore = todayLog?.day_score || 0;
 
   // === AI FUNCTIONS ===
+  const generateWeeklyDigest = async () => {
+    setIsGeneratingDigest(true)
+    try {
+      const { callGroq } = await import('../lib/groq')
+      
+      // Fetch this week's data
+      const weekStart = new Date()
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay())
+      const weekStartStr = weekStart.toISOString().split('T')[0]
+      
+      const [questRes, healthRes, xpRes] = await Promise.all([
+        supabase.from('daily_completions')
+          .select('*').gte('completed_date', weekStartStr),
+        supabase.from('health_logs')
+          .select('*').gte('log_date', weekStartStr),
+        supabase.from('xp_log')
+          .select('*').gte('created_at', weekStartStr)
+      ])
+
+      const totalXP = xpRes.data?.reduce((s, r) => s + r.amount, 0) || 0
+      const questsDone = questRes.data?.length || 0
+      const healthDays = healthRes.data?.length || 0
+      const avgScore = healthRes.data?.length 
+        ? Math.round(healthRes.data.reduce((s,r) => 
+            s + (r.day_score || 0), 0) / healthRes.data.length)
+        : 0
+
+      const result = await callGroq({
+        messages: [{
+          role: 'user',
+          content: `Abhishek's week in numbers:
+          - Quests completed: ${questsDone}
+          - XP earned: ${totalXP}
+          - Health days logged: ${healthDays}/7
+          - Average health score: ${avgScore}%
+          
+          Write a 3-sentence weekly reflection. 
+          Sentence 1: What the numbers say about this week.
+          Sentence 2: One specific thing to fix next week.
+          Sentence 3: One thing to be proud of.
+          Be direct. No fluff. Max 80 words.`
+        }],
+        max_tokens: 200,
+        temperature: 0.7
+      })
+
+      setDigest({
+        text: result.text,
+        questsDone,
+        totalXP,
+        healthDays,
+        avgScore,
+        generatedAt: new Date().toISOString()
+      })
+    } catch (err) {
+      console.error('digest error:', err)
+    }
+    setIsGeneratingDigest(false)
+  }
+
   const generateGreeting = async () => {
     setAiLoading(true);
     try {
@@ -81,22 +145,13 @@ const CommandCenter = () => {
       the actual numbers. Then ONE specific thing to focus on today.
       Tone: precise, direct, like Tony Stark's JARVIS. No fluff.`;
 
-      const response = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 120,
-          temperature: 0.8
-        })
+      const { callGroq } = await import('../lib/groq');
+      const result = await callGroq({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 120,
+        temperature: 0.8
       });
-      const data = await response.json();
-      setAiGreeting(data.choices[0].message.content);
+      setAiGreeting(result.text);
       setGreetingGenerated(true);
     } catch (err) {
       console.error('greeting error:', err);
@@ -122,22 +177,13 @@ const CommandCenter = () => {
       Be specific. No question marks. Just the directive.
       Start with an action verb.`;
 
-      const response = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 60,
-          temperature: 0.7
-        })
+      const { callGroq } = await import('../lib/groq');
+      const result = await callGroq({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 60,
+        temperature: 0.7
       });
-      const data = await response.json();
-      setFocusTask(data.choices[0].message.content);
+      setFocusTask(result.text);
     } catch (err) {
       console.error('focus error:', err);
     }
@@ -234,6 +280,79 @@ const CommandCenter = () => {
             </button>
           </div>
         </div>
+      </div>
+
+      {/* Weekly Digest Card */}
+      <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 mb-6">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="text-[10px] font-bold text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-widest mb-0.5">
+              Weekly Digest
+            </p>
+            <p className="text-sm font-bold text-[#1A1A2E] font-['Inter']">
+              This Week So Far
+            </p>
+          </div>
+          <button
+            onClick={() => setDigestExpanded(!digestExpanded)}
+            className="text-xs text-[#9A9590] font-['Space_Mono'] 
+              uppercase tracking-wider"
+          >
+            {digestExpanded ? 'Hide' : 'Show'}
+          </button>
+        </div>
+
+        {/* Stats row always visible */}
+        <div className="grid grid-cols-4 gap-3 mb-3">
+          {[
+            { label: 'Quests', value: digest?.questsDone ?? '—' },
+            { label: 'XP', value: digest?.totalXP ?? '—' },
+            { label: 'Health Days', value: digest ? `${digest.healthDays}/7` : '—' },
+            { label: 'Avg Score', value: digest ? `${digest.avgScore}%` : '—' }
+          ].map(stat => (
+            <div key={stat.label} className="bg-[#F5F4F0] rounded-xl p-3 
+              text-center">
+              <p className="text-base font-bold text-[#1A1A2E] 
+                font-['Space_Mono']">{stat.value}</p>
+              <p className="text-[9px] text-[#9A9590] font-['Space_Mono'] 
+                uppercase tracking-wider mt-0.5">{stat.label}</p>
+            </div>
+          ))}
+        </div>
+
+        {digestExpanded && (
+          <div>
+            {!digest && !isGeneratingDigest && (
+              <button
+                onClick={generateWeeklyDigest}
+                className="w-full bg-[#1A1A2E] text-white py-2.5 rounded-xl
+                  text-xs font-bold font-['Space_Mono'] uppercase tracking-wider"
+              >
+                Generate JARVIS Digest
+              </button>
+            )}
+            {isGeneratingDigest && (
+              <p className="text-xs text-[#9A9590] font-['Space_Mono'] 
+                uppercase tracking-wider text-center py-3 animate-pulse">
+                Analyzing your week...
+              </p>
+            )}
+            {digest?.text && (
+              <div className="bg-[#F5F4F0] rounded-xl p-4 
+                border-l-4 border-[#E07B39]">
+                <p className="text-sm text-[#1A1A2E] font-['Inter'] 
+                  leading-relaxed">{digest.text}</p>
+                <button onClick={generateWeeklyDigest}
+                  className="text-[9px] text-[#9A9590] font-['Space_Mono'] 
+                    uppercase tracking-wider mt-3 hover:text-[#E07B39]
+                    transition-colors">
+                  Refresh
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ── STATS ROW ── */}

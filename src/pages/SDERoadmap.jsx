@@ -41,6 +41,7 @@ const SDERoadmap = () => {
     chapters, 
     dsaSolved, 
     loading, 
+    isLoading,
     loadRoadmap, 
     updateChapterStatus, 
     updateNotes, 
@@ -52,7 +53,7 @@ const SDERoadmap = () => {
   const [expandedNotes, setExpandedNotes] = useState(null);
 
   useEffect(() => {
-    loadRoadmap();
+    if (!chapters?.length) loadRoadmap();
   }, []);
 
   const filteredChapters = useMemo(() => {
@@ -93,10 +94,22 @@ const SDERoadmap = () => {
     updateChapterStatus(chapter.chapter_id, nextStatus);
   };
 
-  if (loading && chapters.length === 0) return <div className="p-8 animate-pulse text-slate-400">Initializing Roadmap...</div>;
+  if (isLoading && !chapters?.length) {
+    return (
+      <div className="flex-1 p-6 space-y-4">
+        <div className="h-6 bg-[#F5F4F0] animate-pulse rounded w-1/3 mb-8" />
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="h-32 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-32 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-32 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+        </div>
+        <div className="h-96 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+      </div>
+    );
+  }
 
   return (
-    <div className="flex gap-8 pb-20 max-w-7xl mx-auto">
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6 max-w-7xl mx-auto">
       
       {/* Main Content */}
       <div className="flex-1 space-y-8">

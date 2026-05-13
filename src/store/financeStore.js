@@ -9,11 +9,12 @@ export const useFinanceStore = create((set, get) => ({
   curiosityNodes: [],
   readingStreak: 0,
   loading: false,
+  isLoading: false,
   lastLoaded: null,
 
   loadFinanceData: async (force = false) => {
     if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
-    set({ loading: true });
+    set({ loading: true, isLoading: true });
     try {
       // 1. Fetch Books
       const { data: books } = await supabase
@@ -48,11 +49,12 @@ export const useFinanceStore = create((set, get) => ({
         curiosityNodes: nodes || [],
         readingStreak: streak,
         loading: false,
+        isLoading: false,
         lastLoaded: Date.now()
       });
     } catch (err) {
       console.error('Failed to load finance data:', err);
-      set({ loading: false });
+      set({ loading: false, isLoading: false });
     }
   },
 

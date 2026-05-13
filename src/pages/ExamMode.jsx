@@ -53,6 +53,7 @@ const ExamMode = () => {
     subjects, 
     checklists, 
     loading,
+    isLoading,
     loadSemesters, 
     switchSemester,
     updateSubjectReadiness,
@@ -67,7 +68,7 @@ const ExamMode = () => {
   const [checkedTasks, setCheckedTasks] = useState(new Set());
 
   useEffect(() => {
-    loadSemesters();
+    if (!semesters?.length) loadSemesters();
   }, []);
 
   useEffect(() => {
@@ -96,17 +97,25 @@ const ExamMode = () => {
     return { days, hours };
   };
 
-  if (loading && !semesters.length) {
+  if (isLoading && !semesters?.length) {
     return (
-      <div className="flex flex-col items-center justify-center h-[60vh] space-y-4">
-        <div className="w-12 h-12 border-4 border-[#E5E0D8] border-t-[#E07B39] rounded-full animate-spin" />
-        <p className="font-mono text-sm uppercase tracking-widest text-[#9A9590]">Syncing Exam Vault...</p>
+      <div className="flex-1 p-6 space-y-4">
+        <div className="h-6 bg-[#F5F4F0] animate-pulse rounded w-1/3 mb-8" />
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="h-56 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-56 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="h-72 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-72 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+          <div className="h-72 bg-[#F5F4F0] animate-pulse rounded-2xl" />
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen pb-20 space-y-10 animate-in fade-in duration-500">
+    <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6">
       
       {/* HEADER */}
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">

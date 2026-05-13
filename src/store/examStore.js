@@ -9,11 +9,12 @@ export const useExamStore = create((set, get) => ({
   subjects: [],    // Subjects for active semester
   checklists: {},  // subject_id -> items
   loading: false,
+  isLoading: false,
   lastLoaded: null,
 
   loadSemesters: async () => {
     if (get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
-    set({ loading: true });
+    set({ loading: true, isLoading: true });
     try {
       const { data: sems, error } = await supabase
         .from('semesters')
@@ -23,14 +24,20 @@ export const useExamStore = create((set, get) => ({
       if (error) throw error;
 
       const active = sems.find(s => s.is_active) || sems[0];
-      set({ semesters: sems, activeSem: active, loading: false, lastLoaded: Date.now() });
+      set({ 
+        semesters: sems, 
+        activeSem: active, 
+        loading: false, 
+        isLoading: false,
+        lastLoaded: Date.now() 
+      });
       
       if (active) {
         await get().loadSemesterContent(active.id);
       }
     } catch (err) {
       console.error('Failed to load semesters:', err);
-      set({ loading: false });
+      set({ loading: false, isLoading: false });
     }
   },
 

@@ -782,7 +782,7 @@ export const useAiTrackStore = create((set, get) => ({
 
     try {
       const { supabase } = await import('../lib/supabase');
-      await supabase.from('ai_track_progress').upsert({
+      const { error } = await supabase.from('ai_track_progress').upsert({
         topic_id: topicId,
         topic_title: topicTitle,
         section_id: sectionId,
@@ -792,8 +792,17 @@ export const useAiTrackStore = create((set, get) => ({
         phase1_date: newVal ? new Date().toISOString().split('T')[0] : null,
         updated_at: new Date().toISOString()
       }, { onConflict: 'topic_id' });
+
+      if (error) throw error;
     } catch (err) {
       console.error('togglePhase1 error:', err);
+      // Rollback
+      set(state => ({
+        progress: {
+          ...state.progress,
+          [topicId]: { ...current, phase1_done: !newVal }
+        }
+      }));
     }
   },
 
@@ -810,7 +819,7 @@ export const useAiTrackStore = create((set, get) => ({
 
     try {
       const { supabase } = await import('../lib/supabase');
-      await supabase.from('ai_track_progress').upsert({
+      const { error } = await supabase.from('ai_track_progress').upsert({
         topic_id: topicId,
         topic_title: topicTitle,
         section_id: sectionId,
@@ -820,8 +829,17 @@ export const useAiTrackStore = create((set, get) => ({
         phase2_date: newVal ? new Date().toISOString().split('T')[0] : null,
         updated_at: new Date().toISOString()
       }, { onConflict: 'topic_id' });
+
+      if (error) throw error;
     } catch (err) {
       console.error('togglePhase2 error:', err);
+      // Rollback
+      set(state => ({
+        progress: {
+          ...state.progress,
+          [topicId]: { ...current, phase2_done: !newVal }
+        }
+      }));
     }
   },
 
@@ -895,23 +913,13 @@ Return ONLY valid JSON, no markdown, no backticks:
 Generate exactly 3 key_questions, 4 concepts_to_investigate, 2 books, 2 papers, 3 exploration_tasks.
 All books and papers must be REAL with accurate information.`;
 
-      const response = await fetch(
-        'https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${import.meta.env.VITE_GROQ_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 1500,
-          temperature: 0.85
-        })
+      const { callGroq } = await import('../lib/groq');
+      const result = await callGroq({
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 1500,
+        temperature: 0.85
       });
-
-      const data = await response.json();
-      const raw = data.choices[0].message.content;
+      const raw = result.text;
       const cleaned = raw.replace(/```json|```/g, '').trim();
       const parsed = JSON.parse(cleaned);
 

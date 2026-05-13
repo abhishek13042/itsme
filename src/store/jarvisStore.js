@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
-import { generateText } from '../lib/gemini';
+import { generateText } from '../lib/groq';
 import { buildSystemPrompt } from '../lib/jarvisPrompt';
 
 export const useJarvisStore = create((set, get) => ({
@@ -13,6 +13,8 @@ export const useJarvisStore = create((set, get) => ({
   voiceEnabled: localStorage.getItem('jarvis_voice_enabled') === 'true',
   playerContext: null,       // stores the last fetched context object
   briefGeneratedAt: null,    // ISO string timestamp
+  isStreaming: false,
+  streamingContent: '',
 
   // --- ACTIONS ---
 
@@ -74,59 +76,85 @@ export const useJarvisStore = create((set, get) => ({
     }
   },
 
-  sendMessage: async (userText, context) => {
-    if (get().isGenerating) return;
-    set({ isGenerating: true });
-
-    const userMsg = {
-      id: Date.now(),
-      role: 'user',
-      text: userText,
-      timestamp: new Date().toISOString()
-    };
-
-    set(state => ({ chatHistory: [...state.chatHistory, userMsg] }));
+  sendMessage: async (userMessage) => {
+    // Add user message immediately
+    const userMsg = { role: 'user', content: userMessage, text: userMessage,
+      timestamp: new Date().toISOString() }
+    set(state => ({ 
+      chatHistory: [...state.chatHistory, userMsg],
+      isStreaming: true,
+      streamingContent: ''
+    }))
 
     try {
-      const systemPrompt = buildSystemPrompt(context || get().playerContext, 'chat');
-      const responseText = await generateText(systemPrompt, userText);
+      const { collectFullContext } = await import('../lib/jarvisContext')
+      const context = await collectFullContext()
+      const systemPrompt = buildSystemPrompt(context, 'chat')
+      
+      const res = await fetch('/api/groq/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            ...get().chatHistory.map(m => ({ 
+              role: m.role === 'jarvis' ? 'assistant' : 'user', content: m.text || m.content 
+            }))
+          ],
+          max_tokens: 1000,
+          stream: true
+        })
+      })
 
-      const jarvisMsg = {
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let fullContent = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        
+        const chunk = decoder.decode(value)
+        const lines = chunk.split('\n').filter(l => l.startsWith('data: '))
+        
+        for (const line of lines) {
+          const data = line.replace('data: ', '')
+          if (data === '[DONE]') break
+          try {
+            const parsed = JSON.parse(data)
+            const token = parsed.choices?.[0]?.delta?.content || ''
+            fullContent += token
+            set({ streamingContent: fullContent })
+          } catch {}
+        }
+      }
+
+      const assistantMsg = { 
         id: Date.now() + 1,
-        role: 'jarvis',
-        text: responseText,
+        role: 'jarvis', 
+        text: fullContent,
+        content: fullContent,
         timestamp: new Date().toISOString()
-      };
-
-      set(state => ({ 
-        chatHistory: [...state.chatHistory, jarvisMsg],
-        isGenerating: false 
-      }));
+      }
+      set(state => ({
+        chatHistory: [...state.chatHistory, assistantMsg],
+        isStreaming: false,
+        streamingContent: ''
+      }))
 
       // Persistence
       await supabase.from('ai_sessions').insert({
         session_date: new Date().toISOString().split('T')[0],
         type: 'conversation',
-        context_snapshot: context || get().playerContext,
-        ai_response: { response: responseText },
-        user_input: userText
+        context_snapshot: context,
+        ai_response: { response: fullContent },
+        user_input: userMessage
       });
 
-      return responseText;
     } catch (err) {
-      console.error('Jarvis sendMessage error:', err);
-      const errorText = "System error. Try again.";
-      const errorMsg = {
-        id: Date.now() + 2,
-        role: 'jarvis',
-        text: errorText,
-        timestamp: new Date().toISOString()
-      };
-      set(state => ({ 
-        chatHistory: [...state.chatHistory, errorMsg],
-        isGenerating: false 
-      }));
-      return errorText;
+      console.error('JARVIS stream error:', err)
+      set({ isStreaming: false, streamingContent: '' })
     }
   },
 
@@ -135,9 +163,26 @@ export const useJarvisStore = create((set, get) => ({
     set({ isGenerating: true });
 
     try {
+      const { data: lastDebrief } = await supabase
+        .from('ai_sessions')
+        .select('ai_response, user_input, session_date')
+        .eq('type', 'evening_debrief')
+        .order('session_date', { ascending: false })
+        .limit(1)
+        .single()
+
       const systemPrompt = buildSystemPrompt(context || get().playerContext, 'briefing');
-      const userPrompt = "Generate my morning brief. Be concise, sharp, and data-driven. Cover: current level and XP progress, today's streak status, wallet balance, top 3 priorities for today based on my domain progress, and one motivational line that is specific to my situation — not generic. Format with clear sections. Max 200 words.";
+      const basePrompt = "Generate my morning brief. Be concise, sharp, and data-driven. Cover: current level and XP progress, today's streak status, wallet balance, top 3 priorities for today based on my domain progress, and one motivational line that is specific to my situation — not generic. Format with clear sections. Max 200 words.";
       
+      const userPrompt = `${basePrompt}
+${lastDebrief ? `
+LAST NIGHT'S DEBRIEF:
+Rating: ${lastDebrief.user_input}
+Notes: ${lastDebrief.ai_response}
+Use this to personalize today's brief — reference what was 
+discussed, acknowledge progress or struggles mentioned.
+` : 'No previous debrief available — this is a fresh start.'}`;
+
       const responseText = await generateText(systemPrompt, userPrompt);
 
       set({ 

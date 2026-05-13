@@ -11,16 +11,23 @@ export const useTradingStore = create((set, get) => ({
   moneyEntries: [],
   withdrawals: [],
   loading: false,
+  isLoading: false,
   lastLoaded: null,
+  tradesPage: 0,
+  tradesHasMore: true,
+  PAGE_SIZE: 20,
 
   loadTradingData: async () => {
     if (get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
-    set({ loading: true });
+    set({ loading: true, isLoading: true });
     try {
       await seedTradingSystem();
       
-      const [tradesRes, phasesRes, journalRes, moneyRes, withRes] = await Promise.all([
-        supabase.from('trades').select('*').order('date', { ascending: false }),
+      if (get().trades.length === 0) {
+        await get().loadMoreTrades();
+      }
+      
+      const [phasesRes, journalRes, moneyRes, withRes] = await Promise.all([
         supabase.from('trading_phases').select('*').order('phase_number', { ascending: true }),
         supabase.from('trade_journal').select('*').order('entry_date', { ascending: false }),
         supabase.from('money_tracker').select('*').order('entry_date', { ascending: false }),
@@ -28,17 +35,40 @@ export const useTradingStore = create((set, get) => ({
       ]);
 
       set({ 
-        trades: tradesRes.data || [], 
+        trades: get().trades, 
         phases: phasesRes.data || [], 
         journalEntries: journalRes.data || [],
         moneyEntries: moneyRes.data || [],
         withdrawals: withRes.data || [],
         loading: false,
+        isLoading: false,
         lastLoaded: Date.now()
       });
     } catch (err) {
       console.error('Failed to load trading data:', err);
-      set({ loading: false });
+      set({ loading: false, isLoading: false });
+    }
+  },
+
+  loadMoreTrades: async () => {
+    const { tradesPage, trades, PAGE_SIZE } = get()
+    const from = tradesPage * PAGE_SIZE
+    const to = from + PAGE_SIZE - 1
+    
+    const { data, error } = await supabase
+      .from('trades')
+      .select('*')
+      .order('date', { ascending: false })
+      .range(from, to)
+    
+    if (!error && data) {
+      set(state => ({
+        trades: tradesPage === 0 
+          ? data 
+          : [...state.trades, ...data],
+        tradesPage: tradesPage + 1,
+        tradesHasMore: data.length === PAGE_SIZE
+      }))
     }
   },
 

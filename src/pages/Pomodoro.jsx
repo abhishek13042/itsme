@@ -17,31 +17,66 @@ const Pomodoro = () => {
     skipPhase,
     addTimer,
     removeTimer,
-    tick
+    isRunning: storeRunning,
+    expectedEndAt
   } = usePomodoroStore();
+
+  const [localTimeLeft, setLocalTimeLeft] = useState(0);
 
   // Primary timer is the first one in the list
   const activeTimer = timers[0];
-  const isRunning = activeTimer?.isRunning || false;
   const isFocusMode = activeTimer ? !activeTimer.isBreak : true;
-  const timeLeft = activeTimer?.timeLeft || 25 * 60;
   const sessionsCompleted = statsToday?.completedCount || 0;
   
   // Progress calculation
   const totalDuration = activeTimer 
     ? (activeTimer.isBreak ? activeTimer.breakDuration : activeTimer.duration) 
     : 25 * 60;
-  const progress = timeLeft / totalDuration;
-
+  
   // Mode from store is usually 'pomodoro'
   const currentMode = activeTimer?.modeId || 'pomodoro';
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      tick();
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [tick]);
+    let interval;
+    if (storeRunning && expectedEndAt) {
+      interval = setInterval(() => {
+        const remaining = Math.max(0, Math.ceil((expectedEndAt - Date.now()) / 1000));
+        setLocalTimeLeft(remaining);
+        
+        // Tab Title update
+        const mins = Math.floor(remaining / 60);
+        const secs = remaining % 60;
+        document.title = `${mins}:${secs < 10 ? '0' : ''}${secs} — ${isFocusMode ? 'Focus' : 'Break'}`;
+
+        if (remaining === 0) {
+          usePomodoroStore.getState().completePhase(activeTimer.id);
+          clearInterval(interval);
+        }
+      }, 1000);
+    } else {
+      setLocalTimeLeft(activeTimer?.timeLeft || totalDuration);
+      document.title = "Player One";
+    }
+
+    return () => {
+      clearInterval(interval);
+      document.title = "Player One";
+    };
+  }, [storeRunning, expectedEndAt, activeTimer?.id, isFocusMode]);
+
+  // Handle visibility change to resync
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && storeRunning && expectedEndAt) {
+        const remaining = Math.max(0, Math.ceil((expectedEndAt - Date.now()) / 1000));
+        setLocalTimeLeft(remaining);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [storeRunning, expectedEndAt]);
+
+  const progress = localTimeLeft / totalDuration;
 
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
@@ -54,7 +89,7 @@ const Pomodoro = () => {
       addTimer('pomodoro');
       return;
     }
-    if (isRunning) {
+    if (storeRunning) {
       pauseTimer(activeTimer.id);
     } else {
       startTimer(activeTimer.id);
@@ -131,7 +166,7 @@ const Pomodoro = () => {
               justify-center">
               <p className="text-5xl font-bold text-[#1A1A2E] 
                 font-['Space_Mono'] tabular-nums tracking-tighter">
-                {formatTime(timeLeft)}
+                {formatTime(localTimeLeft)}
               </p>
               <p className="text-[10px] text-[#9A9590] font-['Space_Mono']
                 uppercase tracking-widest mt-1">
@@ -139,7 +174,7 @@ const Pomodoro = () => {
               </p>
             </div>
           </div>
-
+ 
           {/* Controls */}
           <div className="flex items-center gap-4">
             <button
@@ -156,12 +191,12 @@ const Pomodoro = () => {
                 'px-10 py-4 rounded-2xl text-sm font-bold',
                 'font-["Space_Mono"] uppercase tracking-wider',
                 'transition-all shadow-lg transform hover:scale-[1.02] active:scale-95',
-                isRunning
+                storeRunning
                   ? 'bg-[#C0392B] text-white hover:bg-[#A93226]'
                   : 'bg-[#1A1A2E] text-white hover:bg-[#2a2a4e]'
               )}
             >
-              {isRunning ? 'Pause' : 'Start'}
+              {storeRunning ? 'Pause' : 'Start'}
             </button>
             <button
               onClick={handleSkip}
