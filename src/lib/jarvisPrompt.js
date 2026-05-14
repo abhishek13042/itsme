@@ -67,6 +67,17 @@ ${context.recentMemory.map(m =>
 Use this to remember past conversations with Abhishek.
 Do not repeat advice already given. Reference past discussions
 naturally. Build on previous context.
+` : ''}
+
+${context.globalMemory ? `
+
+${context.globalMemory}
+
+Use this memory to:
+- Reference what Abhishek has previously worked on
+- Avoid repeating advice already given
+- Build on previous conversations and completions
+- Understand his patterns and progress trajectory
+- Generate quests that continue from where he left off
 ` : ''}`;
 }
-

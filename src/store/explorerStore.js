@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 
 import { callGroq } from '../lib/groq';
+import { saveExplorerMemory, loadMemories, MEMORY_TYPES } from '../lib/globalMemory'
 
 const groqFetch = async (prompt) => {
   const result = await callGroq({
@@ -9,6 +10,10 @@ const groqFetch = async (prompt) => {
     max_tokens: 2500,
     temperature: 0.9
   });
+  if (result.error) {
+    console.error('Groq fetch error:', result.error)
+    return null
+  }
   return result.text;
 };
 
@@ -34,9 +39,20 @@ export const useExplorerStore = create((set, get) => ({
   readItems: new Set(),
 
   // UI state
-  isGenerating: false,
   isSavingNotes: false,
   lastGenerated: null,
+
+  // Retention Quiz
+  activeQuiz: null,
+  quizHistory: {},
+
+  // Connections
+  topicConnections: null,
+  isGeneratingConnections: false,
+
+  // Streak
+  conceptStreak: 0,
+  lastConceptDate: null,
 
   // ── LOAD CURRENT TOPIC ──
   loadSavedTopic: async () => {
@@ -94,6 +110,187 @@ export const useExplorerStore = create((set, get) => ({
     } catch (err) {
       console.error('Knowledge depth load error:', err);
     }
+
+    // Load streak
+    try {
+      const { data } = await supabase
+        .from('knowledge_depth')
+        .select('*')
+        .eq('domain', '_streak')
+        .single()
+      
+      if (data) {
+        set({ 
+          conceptStreak: data.brain_drops || 0,
+          lastConceptDate: null // We'll rely on session logic or add a column if needed, for now use brain_drops as streak count
+        })
+      }
+    } catch {}
+  },
+
+  updateConceptStreak: async () => {
+    const { getTodayIST } = await import('../lib/dateUtils')
+    const today = getTodayIST()
+    const { lastConceptDate, conceptStreak } = get()
+    
+    if (lastConceptDate === today) return 
+    
+    const yesterday = new Date()
+    yesterday.setDate(yesterday.getDate() - 1)
+    const yesterdayStr = yesterday.toISOString().split('T')[0]
+    
+    const newStreak = lastConceptDate === yesterdayStr 
+      ? conceptStreak + 1 
+      : 1
+    
+    set({ conceptStreak: newStreak, lastConceptDate: today })
+    
+    await supabase
+      .from('knowledge_depth')
+      .upsert({ 
+        domain: '_streak',
+        brain_drops: newStreak,
+        topics_explored: newStreak
+      }, { onConflict: 'domain' })
+
+    if (newStreak % 7 === 0) {
+      const { triggerJarvisToast } = await import('../components/JarvisToast')
+      triggerJarvisToast({
+        type: 'success',
+        title: `${newStreak} Day Explorer Streak`,
+        message: 'Reading daily. Knowledge compounds.',
+        xp: 25
+      })
+    }
+  },
+
+  generateQuiz: async (concept) => {
+    try {
+      const result = await callGroq({
+        messages: [{
+          role: 'user',
+          content: `Generate exactly 2 retention questions for this concept: "${concept.title}"
+          Context: ${concept.summary || concept.title}
+          
+          Return ONLY valid JSON array, no markdown:
+          [
+            {
+              "question": "...",
+              "options": ["A: ...", "B: ...", "C: ...", "D: ..."],
+              "correct": 0,
+              "explanation": "..."
+            },
+            {
+              "question": "...",
+              "options": ["A: ...", "B: ...", "C: ...", "D: ..."],
+              "correct": 2,
+              "explanation": "..."
+            }
+          ]`
+        }],
+        max_tokens: 500,
+        temperature: 0.6
+      })
+
+      if (!result.error) {
+        const clean = result.text.replace(/```json|```/g, '').trim()
+        const questions = JSON.parse(clean)
+        set({ 
+          activeQuiz: { 
+            concept: concept.title,
+            questions,
+            currentQ: 0,
+            score: 0,
+            done: false
+          }
+        })
+      }
+    } catch (err) {
+      console.error('quiz gen error:', err)
+    }
+  },
+
+  answerQuiz: (answerIndex) => {
+    const { activeQuiz } = get()
+    if (!activeQuiz) return
+    
+    const isCorrect = answerIndex === activeQuiz.questions[activeQuiz.currentQ].correct
+    const newScore = activeQuiz.score + (isCorrect ? 1 : 0)
+    const isLast = activeQuiz.currentQ === activeQuiz.questions.length - 1
+
+    if (isLast) {
+      set({ 
+        activeQuiz: { 
+          ...activeQuiz, 
+          score: newScore, 
+          done: true,
+          lastAnswer: answerIndex
+        },
+        quizHistory: {
+          ...get().quizHistory,
+          [activeQuiz.concept]: { 
+            score: newScore, 
+            total: activeQuiz.questions.length,
+            date: new Date().toISOString()
+          }
+        }
+      })
+    } else {
+      set({
+        activeQuiz: {
+          ...activeQuiz,
+          score: newScore,
+          currentQ: activeQuiz.currentQ + 1,
+          lastAnswer: answerIndex
+        }
+      })
+    }
+  },
+
+  dismissQuiz: () => set({ activeQuiz: null }),
+
+  generateConnections: async () => {
+    const { topicArchive } = get()
+    if (!topicArchive || topicArchive.length < 3) return
+    
+    set({ isGeneratingConnections: true })
+    
+    try {
+      const topicTitles = topicArchive
+        .slice(0, 8)
+        .map(t => t.topic_data?.title || t.domain)
+        .join(', ')
+
+      const result = await callGroq({
+        messages: [{
+          role: 'user',
+          content: `These are Abhishek's recent study topics: ${topicTitles}
+          
+          Find 3 non-obvious intellectual connections between these topics. Each connection must reference exactly 2 of the topics listed.
+          
+          Return ONLY valid JSON, no markdown:
+          [
+            {
+              "topic1": "...",
+              "topic2": "...",
+              "connection": "One sentence explaining the link",
+              "insight": "Why this matters for an AI engineer"
+            }
+          ]`
+        }],
+        max_tokens: 400,
+        temperature: 0.8
+      })
+
+      if (!result.error) {
+        const clean = result.text.replace(/```json|```/g, '').trim()
+        const connections = JSON.parse(clean)
+        set({ topicConnections: connections })
+      }
+    } catch (err) {
+      console.error('connections error:', err)
+    }
+    set({ isGeneratingConnections: false })
   },
 
   // ── GENERATE NEW TOPIC ──
@@ -114,6 +311,14 @@ export const useExplorerStore = create((set, get) => ({
     }
 
     try {
+      let pastTopics = ''
+      try {
+        const explorerMemory = await loadMemories(MEMORY_TYPES.EXPLORER, 8)
+        pastTopics = explorerMemory.map(m => m.content).join('\n- ')
+      } catch (memErr) {
+        console.error('Failed to load explorer memory:', memErr)
+      }
+
       const domains = [
         'Psychology',
         'Neuroscience',
@@ -179,9 +384,22 @@ Return ONLY valid JSON, no markdown, no backticks, no explanation:
   }
 }
 
-Generate exactly 5 concepts that build on each other (concept 1 is foundation, concept 5 is advanced synthesis). Generate 3 books and 3 papers. All books and papers must be REAL — accurate titles, real authors, real journals.`;
+Generate exactly 5 concepts that build on each other (concept 1 is foundation, concept 5 is advanced synthesis). Generate 3 books and 3 papers. All books and papers must be REAL — accurate titles, real authors, real journals.
+      
+      ${pastTopics ? `
+      PAST EXPLORER SESSIONS:
+      - ${pastTopics}
+
+      Generate a topic that CONNECTS TO or BUILDS ON past topics.
+      Don't repeat domains already heavily covered.
+      Find unexpected connections between past topics.
+      ` : ''}`;
 
       const raw = await groqFetch(prompt);
+      if (!raw) {
+        set({ isGenerating: false });
+        return;
+      }
       const cleaned = raw.replace(/```json|```/g, '').trim();
       const parsed = JSON.parse(cleaned);
 
@@ -242,6 +460,9 @@ Generate exactly 5 concepts that build on each other (concept 1 is foundation, c
         lastGenerated: new Date().toISOString(),
       });
 
+      saveExplorerMemory(topic.title || 'Weekly topic', 0)
+
+
       // Reload archive and depth
       get().loadArchive();
       get().loadKnowledgeDepth();
@@ -252,10 +473,19 @@ Generate exactly 5 concepts that build on each other (concept 1 is foundation, c
   },
 
   // ── MARK CONCEPT READ (persisted) ──
-  markRead: async (title) => {
+  markRead: async (concept) => {
+    const title = concept.title || concept
     const { currentTopicId, readItems } = get();
     const newSet = new Set([...readItems, title]);
     set({ readItems: newSet });
+
+    // Generate retention quiz
+    if (typeof concept === 'object') {
+      get().generateQuiz(concept)
+    }
+    
+    // Update streak
+    get().updateConceptStreak()
 
     if (currentTopicId) {
       try {
@@ -290,6 +520,11 @@ Generate exactly 5 concepts that build on each other (concept 1 is foundation, c
         }
 
         get().loadKnowledgeDepth();
+
+        // Save memory
+        const topic = get().weeklyTopic?.title || 'Unknown topic'
+        const readCount = get().readItems?.size || 0
+        saveExplorerMemory(topic, readCount) // fire and forget
       } catch (err) {
         console.error('markRead persist error:', err);
       }

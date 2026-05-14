@@ -1,4 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { checkDrawdown } from '../lib/drawdownDetector';
+import { X } from 'lucide-react';
+import TradeChecklist from '../components/TradeChecklist';
 import { useTradingStore } from '../store/tradingStore';
 import Card from '../components/Card';
 import Badge from '../components/Badge';
@@ -6,6 +10,8 @@ import Button from '../components/Button';
 import ProgressBar from '../components/ProgressBar';
 import EmptyState from '../components/EmptyState';
 import { supabase } from '../lib/supabase';
+import { getTodayIST } from '../lib/dateUtils';
+import { loadMemories, saveMemory, MEMORY_TYPES } from '../lib/globalMemory'
 import { 
   AreaChart, 
   Area, 
@@ -69,12 +75,45 @@ const TradingRoadmap = () => {
   const [journalText, setJournalText] = useState('');
   const [uploading, setUploading] = useState(false);
   const [previewUrl, setPreviewUrl] = useState('');
+  const [showChecklist, setShowChecklist] = useState(false);
+  const [checklistData, setChecklistData] = useState(null);
+  const [showTradeForm, setShowTradeForm] = useState(false);
+  const [tradeSession, setTradeSession] = useState('london');
+  const [weeklyLetter, setWeeklyLetter] = useState(null);
+  const [isGeneratingLetter, setIsGeneratingLetter] = useState(false);
+  const [letterLoaded, setLetterLoaded] = useState(false);
+  const [drawdownAlert, setDrawdownAlert] = useState(null);
+  const [drawdownChecked, setDrawdownChecked] = useState(false);
 
   const tvContainerRef = useRef(null);
 
   useEffect(() => {
     if (!trades?.length) loadTradingData();
   }, []);
+
+  useEffect(() => {
+    const loadLetter = async () => {
+      const { data } = await supabase
+        .from('ai_sessions')
+        .select('ai_response, session_date')
+        .eq('type', 'weekly_trading_letter')
+        .order('session_date', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (data) setWeeklyLetter(data)
+      setLetterLoaded(true)
+    }
+    loadLetter()
+  }, [])
+
+  useEffect(() => {
+    checkDrawdown(supabase)
+      .then(alert => {
+        setDrawdownAlert(alert)
+        setDrawdownChecked(true)
+      })
+      .catch(() => setDrawdownChecked(true))
+  }, [trades])
 
   // TradingView Widget initialization
   useEffect(() => {
@@ -118,19 +157,23 @@ const TradingRoadmap = () => {
     return { todaysTrades, wins, compliance, netPnl, streak };
   }, [trades]);
 
-  const equityData = useMemo(() => {
-    let cumulative = 0;
-    return [...trades]
-      .reverse()
-      .slice(-30)
-      .map(t => {
-        cumulative += (parseFloat(t.pnl) || 0);
-        return {
-          date: format(new Date(t.date), 'MM/dd'),
-          balance: cumulative
-        };
-      });
-  }, [trades]);
+  const sessionStats = useMemo(() => {
+    const sessions = ['london', 'new_york', 'asian', 'overlap']
+    return sessions.map(session => {
+      const sessionTrades = trades.filter(t => t.session === session)
+      if (sessionTrades.length === 0) return null
+      const wins = sessionTrades.filter(t => parseFloat(t.pnl) > 0).length
+      const winRate = Math.round((wins / sessionTrades.length) * 100)
+      const totalPnl = sessionTrades
+        .reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0)
+      return { 
+        session, 
+        tradesCount: sessionTrades.length, 
+        winRate, 
+        totalPnl: Math.round(totalPnl * 100) / 100 
+      }
+    }).filter(Boolean)
+  }, [trades])
 
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
@@ -172,8 +215,15 @@ const TradingRoadmap = () => {
         date: new Date().toISOString().split('T')[0],
         pair: activeTab,
         direction,
-        pnl: 0 // Placeholder as price input was removed
+        session: tradeSession,
+        pnl: 0, // Placeholder
+        rules_score: checklistData?.rulesScore || null,
+        checklist_passed: checklistData 
+          ? Object.values(checklistData.checklist).filter(Boolean).length >= 4 
+          : null
       });
+      setChecklistData(null);
+      setShowTradeForm(false);
       setForm({
         htf_bias: 'NEUTRAL',
         ltr_entry_reason: 'FVG',
@@ -190,6 +240,98 @@ const TradingRoadmap = () => {
       setIsSubmitting(false);
     }
   };
+
+  const generateWeeklyLetter = async () => {
+    setIsGeneratingLetter(true)
+    try {
+      let tradingHistory = ''
+      try {
+        const tradingMemory = await loadMemories(MEMORY_TYPES.TRADING, 8)
+        tradingHistory = tradingMemory.map(m => m.content).join('\n- ')
+      } catch (memErr) {
+        console.error('Failed to load trading memory:', memErr)
+      }
+
+      const { callGroq } = await import('../lib/groq')
+
+
+      const weekStart = new Date()
+      weekStart.setDate(weekStart.getDate() - 7)
+      const fromDate = weekStart.toISOString().split('T')[0]
+
+      const { data: weekTrades } = await supabase
+        .from('trades')
+        .select('*')
+        .gte('date', fromDate)
+
+      const wins = (weekTrades || []).filter(t => 
+        parseFloat(t.pnl) > 0).length
+      const losses = (weekTrades || []).filter(t => 
+        parseFloat(t.pnl) < 0).length
+      const totalPnl = (weekTrades || [])
+        .reduce((sum, t) => sum + parseFloat(t.pnl || 0), 0)
+      const rulesViolations = (weekTrades || []).filter(t => 
+        t.rules_followed === 'NO').length
+
+      const result = await callGroq({
+        messages: [{
+          role: 'user',
+          content: `Write a weekly trading performance letter 
+          for Abhishek. He trades GBPUSD, EURUSD, XAUUSD 
+          using ICT/SMC framework.
+          
+          This week:
+          - Trades: ${weekTrades?.length || 0}
+          - Wins: ${wins}, Losses: ${losses}
+          - Total PnL: ${Math.round(totalPnl * 100) / 100}
+          - Rules violations: ${rulesViolations}
+          
+          Write exactly 1 paragraph. Style: brutal honest 
+          fund manager letter to himself. No fluff. 
+          Reference specific numbers. End with one action 
+          for next week. Max 120 words.
+          
+          ${tradingHistory ? `
+          PAST PERFORMANCE HISTORY:
+          - ${tradingHistory}
+
+          Reference how this week compares to past performance.
+          Identify recurring mistakes or positive trends.
+          ` : ''}`
+        }],
+        max_tokens: 300,
+        temperature: 0.8
+      })
+
+      if (!result.error) {
+        const today = getTodayIST()
+        await supabase.from('ai_sessions').insert({
+          type: 'weekly_trading_letter',
+          session_date: today,
+          ai_response: result.text,
+          user_input: `trades:${weekTrades?.length || 0}`,
+          context_snapshot: JSON.stringify({ 
+            wins, losses, totalPnl, rulesViolations 
+          })
+        })
+        setWeeklyLetter({ 
+          ai_response: result.text, 
+          session_date: today 
+        })
+
+        saveMemory({
+          type: MEMORY_TYPES.TRADING,
+          content: `Weekly trading verdict: ${result.text.substring(0, 200)}`,
+          source: 'weekly_letter',
+          importance: 8
+        })
+      }
+
+    } catch (err) {
+      console.error('letter error:', err)
+    }
+    setIsGeneratingLetter(false)
+  }
 
   const isNYSession = () => {
     const now = new Date();
@@ -240,6 +382,55 @@ const TradingRoadmap = () => {
           </div>
         </div>
       </header>
+
+      {drawdownChecked && drawdownAlert && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className={`rounded-2xl p-5 mb-4 border-2
+            ${drawdownAlert.alertLevel === 'critical'
+              ? 'bg-[#C0392B]/10 border-[#C0392B]'
+              : 'bg-[#E07B39]/10 border-[#E07B39]'}`}
+        >
+          <div className="flex items-start gap-3">
+            <span className="text-2xl shrink-0">
+              {drawdownAlert.alertLevel === 'critical' ? '🚨' : '⚠️'}
+            </span>
+            <div className="flex-1">
+              <p className="text-[9px] font-bold font-['Space_Mono']
+                uppercase tracking-widest mb-1"
+                style={{ 
+                  color: drawdownAlert.alertLevel === 'critical' 
+                    ? '#C0392B' : '#E07B39' 
+                }}>
+                {drawdownAlert.alertLevel === 'critical' 
+                  ? 'Critical Drawdown Alert' 
+                  : 'Risk Warning'}
+              </p>
+              <p className="text-sm font-bold text-[#1A1A2E] 
+                font-['Inter'] mb-1">
+                {drawdownAlert.message}
+              </p>
+              <p className="text-xs text-[#1A1A2E] font-['Inter']
+                font-bold">
+                → {drawdownAlert.action}
+              </p>
+              {drawdownAlert.maxDrawdown > 0 && (
+                <p className="text-[10px] text-[#9A9590] 
+                  font-['Space_Mono'] mt-2 uppercase tracking-wider">
+                  30d max drawdown: {drawdownAlert.maxDrawdown}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={() => setDrawdownAlert(null)}
+              className="text-[#9A9590] hover:text-[#1A1A2E] shrink-0"
+            >
+              <X size={16}/>
+            </button>
+          </div>
+        </motion.div>
+      )}
 
       {/* SECTION 1 — PHASE TRACKER */}
       <Card className="mb-10 !p-7 flex flex-col md:flex-row items-center justify-between gap-8">
@@ -358,7 +549,43 @@ const TradingRoadmap = () => {
                 <p className="text-[12px] text-[#7A7A7A] mt-2">Use this chart to understand macro direction only.</p>
               </Card>
             ) : (
-              <Card className={clsx("!p-8", stats.todaysTrades >= 3 && "opacity-50 grayscale pointer-events-none")}>
+              <div className="space-y-4">
+                {showChecklist && !showTradeForm && (
+                  <TradeChecklist
+                    onComplete={(data) => {
+                      setChecklistData(data)
+                      setShowChecklist(false)
+                      setShowTradeForm(true)
+                    }}
+                    onSkip={() => {
+                      setChecklistData(null)
+                      setShowChecklist(false)
+                      setShowTradeForm(true)
+                    }}
+                  />
+                )}
+
+                {!showChecklist && !showTradeForm && (
+                  <Card className="!p-12 text-center border-dashed">
+                    <PlusCircle className="w-8 h-8 text-[#E07B39] mx-auto mb-4" />
+                    <button 
+                      onClick={() => {
+                        setShowChecklist(true)
+                        setShowTradeForm(false)
+                        setChecklistData(null)
+                      }}
+                      className="bg-[#1A1A2E] text-white px-8 py-3 rounded-xl font-bold font-['Space_Mono'] uppercase tracking-widest hover:bg-[#2a2a4e] transition-all"
+                    >
+                      Log New Setup
+                    </button>
+                    <p className="text-[12px] text-[#7A7A7A] mt-4 uppercase font-bold tracking-wider">
+                      Verify your rules before executing
+                    </p>
+                  </Card>
+                )}
+
+                {showTradeForm && (
+                  <Card className={clsx("!p-8", stats.todaysTrades >= 3 && "opacity-50 grayscale pointer-events-none")}>
                 <form onSubmit={handleSaveEntry} className="space-y-10">
                   <div className="grid grid-cols-2 gap-8 items-center">
                     <div className="flex flex-col gap-1.5">
@@ -386,6 +613,32 @@ const TradingRoadmap = () => {
                           )}
                         >SHORT</button>
                       </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-bold text-[#7A7A7A]
+                      font-['Space_Mono'] uppercase tracking-widest mb-3">
+                      Trading Session
+                    </p>
+                    <div className="flex gap-2">
+                      {['london', 'new_york', 'asian', 'overlap'].map(session => (
+                        <button
+                          key={session}
+                          type="button"
+                          onClick={() => setTradeSession(session)}
+                          className={`flex-1 py-3 rounded-xl text-[10px] 
+                            font-bold font-['Space_Mono'] uppercase tracking-wider
+                            transition-all border
+                            ${tradeSession === session
+                              ? 'bg-[#1A1A2E] text-white border-[#1A1A2E]'
+                              : 'bg-[#F5F4F0] text-[#7A7A7A] border-[#E5E0D8]'}`}
+                        >
+                          {session === 'new_york' ? 'NY' 
+                            : session === 'overlap' ? 'OL'
+                            : session.charAt(0).toUpperCase() + session.slice(1,3)}
+                        </button>
+                      ))}
                     </div>
                   </div>
 
@@ -510,6 +763,8 @@ const TradingRoadmap = () => {
                   </button>
                 </form>
               </Card>
+              )}
+            </div>
             )}
           </section>
         </div>
@@ -583,7 +838,7 @@ const TradingRoadmap = () => {
           </section>
 
           {/* WITHDRAWAL TRACKER */}
-          <section className="space-y-4">
+          <section className="space-y-4 mb-8">
              <p className="text-[11px] font-bold text-[#7A7A7A] uppercase tracking-[0.08em]">Withdrawals</p>
              {!activePhase?.title?.includes('FUNDED') ? (
                 <Card className="!p-8 text-center bg-[#E5E0D8]/10">
@@ -616,6 +871,93 @@ const TradingRoadmap = () => {
                </Card>
              )}
           </section>
+
+          {/* SESSION STATS */}
+          {sessionStats.length > 0 && (
+            <div className="bg-white rounded-2xl border border-[#E5E0D8] 
+              p-5 mb-4">
+              <p className="text-[10px] font-bold text-[#9A9590]
+                font-['Space_Mono'] uppercase tracking-widest mb-3">
+                Session Performance
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                {sessionStats.map(stat => (
+                  <div key={stat.session}
+                    className="bg-[#F5F4F0] rounded-xl p-3">
+                    <p className="text-[9px] font-bold text-[#9A9590]
+                      font-['Space_Mono'] uppercase tracking-wider mb-1">
+                      {stat.session === 'new_york' ? 'New York'
+                        : stat.session === 'overlap' ? 'Overlap'
+                        : stat.session.charAt(0).toUpperCase() + 
+                          stat.session.slice(1)}
+                    </p>
+                    <p className="text-lg font-bold font-['Space_Mono']"
+                      style={{ 
+                        color: stat.winRate >= 50 ? '#1A6B4A' : '#C0392B' 
+                      }}>
+                      {stat.winRate}%
+                    </p>
+                    <p className="text-[9px] text-[#9A9590] 
+                      font-['Space_Mono']">
+                      {stat.tradesCount} trades · {stat.totalPnl > 0 ? '+' : ''}{stat.totalPnl}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              {sessionStats.length >= 2 && (
+                <p className="text-[10px] text-[#E07B39] font-['Space_Mono']
+                  uppercase tracking-wider mt-3 font-bold">
+                  Best: {sessionStats.sort((a,b) => b.winRate - a.winRate)[0]
+                    .session.replace('_', ' ').toUpperCase()} session
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* WEEKLY LETTER */}
+          {letterLoaded && (
+            <div className="bg-white rounded-2xl border border-[#E5E0D8] 
+              p-5 mb-4">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <p className="text-[10px] font-bold text-[#9A9590]
+                    font-['Space_Mono'] uppercase tracking-widest mb-0.5">
+                    Weekly Letter
+                  </p>
+                  <p className="text-sm font-bold text-[#1A1A2E] 
+                    font-['Inter']">
+                    JARVIS Verdict
+                  </p>
+                </div>
+                <button
+                  onClick={generateWeeklyLetter}
+                  disabled={isGeneratingLetter}
+                  className="bg-[#1A1A2E] text-white px-3 py-1.5 
+                    rounded-lg text-[9px] font-bold font-['Space_Mono']
+                    uppercase tracking-wider disabled:opacity-50"
+                >
+                  {isGeneratingLetter ? 'Writing...' : 'Generate'}
+                </button>
+              </div>
+              {weeklyLetter ? (
+                <div className="bg-[#F5F4F0] rounded-xl p-4 
+                  border-l-4 border-[#1A1A2E]">
+                  <p className="text-sm text-[#1A1A2E] font-['Inter'] 
+                    leading-relaxed">
+                    {weeklyLetter.ai_response}
+                  </p>
+                  <p className="text-[9px] text-[#9A9590] 
+                    font-['Space_Mono'] uppercase tracking-wider mt-2">
+                    {weeklyLetter.session_date}
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-[#9A9590] font-['Inter']">
+                  Generate your weekly trading assessment.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -652,7 +994,21 @@ const TradingRoadmap = () => {
                     {trades.map(t => (
                       <tr key={t.id} className="hover:bg-[#F5F4F0] transition-colors group">
                         <td className="px-6 py-4 text-[12px] font-medium text-[#7A7A7A]">{format(new Date(t.date), 'MMM dd')}</td>
-                        <td className="px-6 py-4 text-[12px] font-bold text-[#1A1A2E]">{t.pair}</td>
+                        <td className="px-6 py-4">
+                           <div className="flex items-center gap-2">
+                              <span className="text-[12px] font-bold text-[#1A1A2E]">{t.pair}</span>
+                              {t.session && (
+                                <span className="text-[8px] font-bold font-['Space_Mono']
+                                  uppercase tracking-wider px-1.5 py-0.5 rounded-md
+                                  bg-[#1A1A2E]/10 text-[#1A1A2E]">
+                                  {t.session === 'new_york' ? 'NY' 
+                                    : t.session === 'overlap' ? 'OL'
+                                    : t.session?.charAt(0).toUpperCase() + 
+                                      t.session?.slice(1,3)}
+                                </span>
+                              )}
+                           </div>
+                        </td>
                         <td className="px-6 py-4">
                            <span className={clsx(
                              "px-2.5 py-1 rounded text-[9px] font-bold text-white",
@@ -664,7 +1020,22 @@ const TradingRoadmap = () => {
                         <td className={clsx(
                           "px-6 py-4 text-[11px] font-bold",
                           t.rules_followed === 'YES' ? "text-[#1A6B4A]" : t.rules_followed === 'PARTIAL' ? "text-[#E07B39]" : "text-[#8B2635]"
-                        )}>{t.rules_followed}</td>
+                        )}>
+                          <div className="flex flex-col gap-1">
+                            <span>{t.rules_followed}</span>
+                            {t.rules_score !== null && t.rules_score !== undefined && (
+                              <span className={`text-[9px] font-bold font-['Space_Mono']
+                                px-2 py-0.5 rounded-full w-fit
+                                ${t.rules_score === 100 
+                                  ? 'bg-[#1A6B4A]/10 text-[#1A6B4A]'
+                                  : t.rules_score >= 66 
+                                    ? 'bg-[#E07B39]/10 text-[#E07B39]'
+                                    : 'bg-[#C0392B]/10 text-[#C0392B]'}`}>
+                                {t.rules_score}% rules
+                              </span>
+                            )}
+                          </div>
+                        </td>
                         <td className="px-6 py-4">
                            {t.screenshot_url ? (
                              <div className="w-8 h-8 rounded-lg border border-[#E5E0D8] overflow-hidden cursor-pointer" onClick={() => window.open(t.screenshot_url)}>

@@ -52,6 +52,8 @@ async function getJarvisLine(event, data) {
       max_tokens: 40,
       temperature: 0.9
     })
+
+    if (result.error) throw new Error(result.error)
     return result.text.trim()
   } catch (err) {
     // Fallback lines if Groq fails

@@ -1,11 +1,13 @@
 import React, { useEffect, useState, Suspense } from 'react';
-import { motion } from 'framer-motion';
-import { Routes, Route } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
+import { Routes, Route, useLocation } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import BottomNav from './components/BottomNav';
 import JarvisToast from './components/JarvisToast';
 import LevelUpEvent from './components/LevelUpEvent';
+import ClusterCelebration from './components/ClusterCelebration';
 import ErrorBoundary from './components/ErrorBoundary';
+import GlobalSearch from './components/GlobalSearch';
 const CommandCenter = React.lazy(() => import('./pages/CommandCenter'));
 const Tracker = React.lazy(() => import('./pages/Tracker'));
 const QuestLog = React.lazy(() => import('./pages/QuestLog'));
@@ -50,6 +52,8 @@ function App() {
   const [loadingText, setLoadingText] = useState('Initializing neural link...');
 
   const isConfigured = !!supabase;
+
+  const location = useLocation();
 
   useEffect(() => {
     if (!isConfigured) return;
@@ -154,7 +158,9 @@ function App() {
   return (
     <div className="flex min-h-screen bg-[var(--bg-secondary)] text-[var(--text-primary)] transition-colors duration-300">
       <JarvisToast />
+      <GlobalSearch />
       <LevelUpEvent />
+      <ClusterCelebration />
       <Sidebar />
       <main className="lg:ml-[260px] ml-0 flex-1 min-h-screen p-4 lg:p-8 bg-[var(--bg-primary)]">
         <div className="max-w-7xl mx-auto h-full">
@@ -170,23 +176,34 @@ function App() {
               </div>
             </div>
           }>
-            <Routes>
-              <Route path="/" element={<ErrorBoundary><CommandCenter /></ErrorBoundary>} />
-              <Route path="/tracker" element={<ErrorBoundary><Tracker /></ErrorBoundary>} />
-              <Route path="/quests" element={<ErrorBoundary><QuestLog /></ErrorBoundary>} />
-              <Route path="/character" element={<ErrorBoundary><CharacterSheet /></ErrorBoundary>} />
-              <Route path="/sde" element={<ErrorBoundary><SDERoadmap /></ErrorBoundary>} />
-              <Route path="/trading" element={<ErrorBoundary><TradingRoadmap /></ErrorBoundary>} />
-              <Route path="/exams" element={<ErrorBoundary><ExamMode /></ErrorBoundary>} />
-              <Route path="/health" element={<ErrorBoundary><Health /></ErrorBoundary>} />
-              <Route path="/finance" element={<ErrorBoundary><FinanceBooks /></ErrorBoundary>} />
-              <Route path="/planner" element={<ErrorBoundary><AIPlanner /></ErrorBoundary>} />
-              <Route path="/pomodoro" element={<ErrorBoundary><Pomodoro /></ErrorBoundary>} />
-              <Route path="/settings" element={<ErrorBoundary><Settings /></ErrorBoundary>} />
-              <Route path="/explorer" element={<ErrorBoundary><Explorer /></ErrorBoundary>} />
-              <Route path="/ai-track" element={<ErrorBoundary><AIEngineerTrack /></ErrorBoundary>} />
-              <Route path="/weekly" element={<ErrorBoundary><WeeklyReview /></ErrorBoundary>} />
-            </Routes>
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={location.pathname}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                style={{ height: '100%' }}
+              >
+                <Routes location={location}>
+                  <Route path="/" element={<ErrorBoundary><CommandCenter /></ErrorBoundary>} />
+                  <Route path="/tracker" element={<ErrorBoundary><Tracker /></ErrorBoundary>} />
+                  <Route path="/quests" element={<ErrorBoundary><QuestLog /></ErrorBoundary>} />
+                  <Route path="/character" element={<ErrorBoundary><CharacterSheet /></ErrorBoundary>} />
+                  <Route path="/sde" element={<ErrorBoundary><SDERoadmap /></ErrorBoundary>} />
+                  <Route path="/trading" element={<ErrorBoundary><TradingRoadmap /></ErrorBoundary>} />
+                  <Route path="/exams" element={<ErrorBoundary><ExamMode /></ErrorBoundary>} />
+                  <Route path="/health" element={<ErrorBoundary><Health /></ErrorBoundary>} />
+                  <Route path="/finance" element={<ErrorBoundary><FinanceBooks /></ErrorBoundary>} />
+                  <Route path="/planner" element={<ErrorBoundary><AIPlanner /></ErrorBoundary>} />
+                  <Route path="/pomodoro" element={<ErrorBoundary><Pomodoro /></ErrorBoundary>} />
+                  <Route path="/settings" element={<ErrorBoundary><Settings /></ErrorBoundary>} />
+                  <Route path="/explorer" element={<ErrorBoundary><Explorer /></ErrorBoundary>} />
+                  <Route path="/ai-track" element={<ErrorBoundary><AIEngineerTrack /></ErrorBoundary>} />
+                  <Route path="/weekly" element={<ErrorBoundary><WeeklyReview /></ErrorBoundary>} />
+                </Routes>
+              </motion.div>
+            </AnimatePresence>
           </Suspense>
         </div>
       </main>

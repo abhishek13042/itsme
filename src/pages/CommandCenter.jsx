@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
+import { detectPatterns } from '../lib/patternDetector';
+import { getHabitCorrelations } from '../lib/correlationEngine';
+import { detectDomainImbalance } from '../lib/domainBalancer';
 import { useXpStore } from '../store/xpStore';
 import { useQuestStore } from '../store/questStore';
 import { useWalletStore } from '../store/walletStore';
@@ -15,6 +18,11 @@ import {
   RefreshCw, ChevronRight, Target, Brain,
   Sun, Moon, Sunset, Star
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+
+const Skeleton = ({ w = 'w-16', h = 'h-5' }) => (
+  <div className={`${h} ${w} bg-[#F5F4F0] rounded-lg animate-pulse`}/>
+)
 
 const CommandCenter = () => {
   // === STATE ===
@@ -26,14 +34,36 @@ const CommandCenter = () => {
   const [digest, setDigest] = useState(null)
   const [isGeneratingDigest, setIsGeneratingDigest] = useState(false)
   const [digestExpanded, setDigestExpanded] = useState(false)
+  const [patterns, setPatterns] = useState([])
+  const [patternsLoaded, setPatternsLoaded] = useState(false)
+  const [showPatterns, setShowPatterns] = useState(true)
+  const [correlations, setCorrelations] = useState(null)
+  const [domainAlertsDismissed, setDomainAlertsDismissed] = useState(false)
+  const [xpVelocityData, setXpVelocityData] = useState(null)
+  
+  const [energy, setEnergy] = useState(7)
+  const [energySaved, setEnergySaved] = useState(false)
+  const [todayEnergy, setTodayEnergy] = useState(null)
+
+  const navigate = useNavigate()
+
+  const xpVelocity = useMemo(() => {
+    // This reads from xpStore — need to import xpLog
+    // Use Supabase directly for this calculation
+    return null // placeholder — see async load below
+  }, [])
 
   // === STORE CONNECTIONS ===
   const { xp, level, streakDays } = useXpStore();
-  const { dailyQuests, todayCompletions } = useQuestStore();
-  const { balance } = useWalletStore();
   const { todayLog } = useHealthStore();
   const { chapters, dsaSolved } = useSdeStore();
   const { trades } = useTradingStore();
+  const { 
+    dailyQuests, todayCompletions, 
+    domainCompletionMap, weeklyCompletionRate 
+  } = useQuestStore();
+  const { balance } = useWalletStore();
+  const isDataLoading = !level || level === 0;
 
   // === DERIVED DATA ===
   const hour = new Date().getHours();
@@ -61,6 +91,134 @@ const CommandCenter = () => {
   const gymDone = todayLog?.gym_done || false;
   const healthScore = todayLog?.day_score || 0;
 
+  // === PATTERN DETECTION ===
+  useEffect(() => {
+    const loadPatterns = async () => {
+      const detected = await detectPatterns(supabase)
+      setPatterns(detected)
+      setPatternsLoaded(true)
+    }
+    loadPatterns()
+  }, [])
+
+  useEffect(() => {
+    getHabitCorrelations(supabase)
+      .then(data => setCorrelations(data))
+      .catch(() => {})
+  }, [])
+  const domainAlerts = React.useMemo(() => 
+    detectDomainImbalance(domainCompletionMap),
+    [domainCompletionMap]
+  )
+
+  useEffect(() => {
+    const loadVelocity = async () => {
+      const twoWeeksAgo = new Date()
+      twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14)
+      const fromDate = twoWeeksAgo.toISOString().split('T')[0]
+
+      const { data, error } = await supabase
+        .from('xp_log')
+        .select('amount, created_at')
+        .gte('created_at', fromDate)
+
+      if (error || !data || data.length === 0) return
+
+      const today = new Date()
+      const weekStart = new Date()
+      weekStart.setDate(today.getDate() - today.getDay() + 1)
+      weekStart.setHours(0,0,0,0)
+      
+      const lastWeekStart = new Date(weekStart)
+      lastWeekStart.setDate(lastWeekStart.getDate() - 7)
+
+      const thisWeekXP = data
+        .filter(r => new Date(r.created_at) >= weekStart)
+        .reduce((sum, r) => sum + (r.amount || 0), 0)
+
+      const lastWeekXP = data
+        .filter(r => {
+          const d = new Date(r.created_at)
+          return d >= lastWeekStart && d < weekStart
+        })
+        .reduce((sum, r) => sum + (r.amount || 0), 0)
+
+      const trend = lastWeekXP > 0
+        ? Math.round(((thisWeekXP - lastWeekXP) / lastWeekXP) * 100)
+        : null
+
+      setXpVelocityData({ 
+        thisWeek: thisWeekXP, 
+        lastWeek: lastWeekXP, 
+        trend 
+      })
+    }
+    loadVelocity()
+  }, [])
+
+  useEffect(() => {
+    const load = async () => {
+      const today = new Date().toISOString().split('T')[0]
+      const { data } = await supabase
+        .from('ai_sessions')
+        .select('user_input')
+        .eq('type', 'energy_log')
+        .eq('session_date', today)
+        .single()
+      if (data?.user_input) {
+        const val = parseInt(data.user_input)
+        setEnergy(val)
+        setTodayEnergy(val)
+        setEnergySaved(true)
+      }
+    }
+    load().catch(() => {})
+  }, [])
+
+  const saveEnergy = async (val) => {
+    const today = new Date().toISOString().split('T')[0]
+    const { data: existing } = await supabase
+      .from('ai_sessions')
+      .select('id')
+      .eq('type', 'energy_log')
+      .eq('session_date', today)
+      .single()
+    if (existing) {
+      await supabase.from('ai_sessions')
+        .update({ user_input: val.toString() })
+        .eq('id', existing.id)
+    } else {
+      await supabase.from('ai_sessions').insert({
+        type: 'energy_log',
+        session_date: today,
+        user_input: val.toString(),
+        ai_response: '',
+        context_snapshot: '{}'
+      })
+    }
+    setTodayEnergy(val)
+    setEnergySaved(true)
+  }
+
+  const ENERGY_LABELS = {
+    1: 'Drained', 2: 'Low', 3: 'Tired',
+    4: 'Okay', 5: 'Alright', 6: 'Focused',
+    7: 'Sharp', 8: 'Energized', 9: 'Locked In', 10: 'Peak'
+  }
+
+  const getEnergyColor = (v) => v <= 3 ? '#C0392B' : v <= 6 ? '#E07B39' : '#1A6B4A'
+
+  const QUICK_NAV = [
+    { label: 'Explorer', path: '/explorer', icon: Brain, color: '#7C3AED' },
+    { label: 'AI Track', path: '/ai-track', icon: Bot, color: '#1A6B4A' },
+    { label: 'Quests', path: '/quests', icon: Target, color: '#E07B39' },
+    { label: 'Trading', path: '/trading', icon: TrendingUp, color: '#1A1A2E' },
+    { label: 'Health', path: '/health', icon: Heart, color: '#C0392B' },
+    { label: 'SDE', path: '/sde', icon: Code2, color: '#1A1A2E' },
+    { label: 'Planner', path: '/planner', icon: Star, color: '#E07B39' },
+    { label: 'Review', path: '/weekly', icon: RefreshCw, color: '#1A6B4A' },
+  ]
+
   // === AI FUNCTIONS ===
   const generateWeeklyDigest = async () => {
     setIsGeneratingDigest(true)
@@ -81,12 +239,12 @@ const CommandCenter = () => {
           .select('*').gte('created_at', weekStartStr)
       ])
 
-      const totalXP = xpRes.data?.reduce((s, r) => s + r.amount, 0) || 0
+      const totalXP = (xpRes.data || []).reduce((s, r) => s + (r?.amount || 0), 0)
       const questsDone = questRes.data?.length || 0
       const healthDays = healthRes.data?.length || 0
       const avgScore = healthRes.data?.length 
-        ? Math.round(healthRes.data.reduce((s,r) => 
-            s + (r.day_score || 0), 0) / healthRes.data.length)
+        ? Math.round((healthRes.data || []).reduce((s,r) => 
+            s + (r?.day_score || 0), 0) / healthRes.data.length)
         : 0
 
       const result = await callGroq({
@@ -107,6 +265,20 @@ const CommandCenter = () => {
         max_tokens: 200,
         temperature: 0.7
       })
+
+      if (result.error) {
+        console.error('Groq error:', result.error)
+        setDigest({
+          text: 'AI Reflection unavailable. Review your raw metrics below.',
+          questsDone,
+          totalXP,
+          healthDays,
+          avgScore,
+          generatedAt: new Date().toISOString()
+        })
+        setIsGeneratingDigest(false)
+        return
+      }
 
       setDigest({
         text: result.text,
@@ -151,7 +323,12 @@ const CommandCenter = () => {
         max_tokens: 120,
         temperature: 0.8
       });
-      setAiGreeting(result.text);
+      if (result.error) {
+        console.error('Groq error:', result.error)
+        setAiGreeting(`${greeting}, Abhishek. Systems online. Standard protocols active.`)
+      } else {
+        setAiGreeting(result.text);
+      }
       setGreetingGenerated(true);
     } catch (err) {
       console.error('greeting error:', err);
@@ -183,7 +360,12 @@ const CommandCenter = () => {
         max_tokens: 60,
         temperature: 0.7
       });
-      setFocusTask(result.text);
+      if (result.error) {
+        console.error('Groq error:', result.error)
+        setFocusTask('Focus on your top priority task now.')
+      } else {
+        setFocusTask(result.text);
+      }
     } catch (err) {
       console.error('focus error:', err);
     }
@@ -279,6 +461,93 @@ const CommandCenter = () => {
               {focusLoading ? '...' : 'Focus →'}
             </button>
           </div>
+
+          {/* Energy inline row */}
+          <div className="mt-3 pt-3 border-t border-white/10 flex items-center 
+            justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Zap size={12} style={{ color: getEnergyColor(energy) }}/>
+              <p className="text-[9px] font-bold text-white/40 
+                font-['Space_Mono'] uppercase tracking-widest">
+                Energy
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {energySaved ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold font-['Space_Mono']"
+                    style={{ color: getEnergyColor(energy) }}>
+                    {energy}/10 — {ENERGY_LABELS[energy]}
+                  </span>
+                  <button
+                    onClick={() => setEnergySaved(false)}
+                    className="text-[9px] text-white/30 font-['Space_Mono']
+                      uppercase tracking-wider hover:text-white/60"
+                  >
+                    Edit
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setEnergy(e => Math.max(1, e - 1))}
+                    className="w-6 h-6 rounded-lg bg-white/10 text-white 
+                      flex items-center justify-center text-sm font-bold
+                      hover:bg-white/20 transition-all"
+                  >
+                    −
+                  </button>
+                  <span className="text-sm font-bold font-['Space_Mono'] w-6 
+                    text-center"
+                    style={{ color: getEnergyColor(energy) }}>
+                    {energy}
+                  </span>
+                  <button
+                    onClick={() => setEnergy(e => Math.min(10, e + 1))}
+                    className="w-6 h-6 rounded-lg bg-white/10 text-white 
+                      flex items-center justify-center text-sm font-bold
+                      hover:bg-white/20 transition-all"
+                  >
+                    +
+                  </button>
+                  <button
+                    onClick={() => saveEnergy(energy)}
+                    className="text-[9px] font-bold text-white/60 
+                      font-['Space_Mono'] uppercase tracking-wider
+                      hover:text-white transition-colors ml-1"
+                  >
+                    Save
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Quick Nav strip */}
+        <div className="mb-4 -mx-1">
+          <div className="flex gap-2 overflow-x-auto pb-1 px-1 scrollbar-hide" style={{ scrollbarWidth: 'none' }}>
+            {QUICK_NAV.map((item) => {
+              const Icon = item.icon
+              return (
+                <button
+                  key={item.path}
+                  onClick={() => navigate(item.path)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl
+                    bg-white border border-[#E5E0D8] shrink-0
+                    hover:border-[#1A1A2E] hover:shadow-sm transition-all
+                    group"
+                >
+                  <Icon size={12} style={{ color: item.color }}/>
+                  <span className="text-[10px] font-bold font-['Space_Mono']
+                    uppercase tracking-wider text-[#9A9590] 
+                    group-hover:text-[#1A1A2E] transition-colors whitespace-nowrap">
+                    {item.label}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
         </div>
       </div>
 
@@ -291,7 +560,7 @@ const CommandCenter = () => {
               Weekly Digest
             </p>
             <p className="text-sm font-bold text-[#1A1A2E] font-['Inter']">
-              This Week So Far
+              This Week
             </p>
           </div>
           <button
@@ -303,26 +572,37 @@ const CommandCenter = () => {
           </button>
         </div>
 
-        {/* Stats row always visible */}
-        <div className="grid grid-cols-4 gap-3 mb-3">
-          {[
-            { label: 'Quests', value: digest?.questsDone ?? '—' },
-            { label: 'XP', value: digest?.totalXP ?? '—' },
-            { label: 'Health Days', value: digest ? `${digest.healthDays}/7` : '—' },
-            { label: 'Avg Score', value: digest ? `${digest.avgScore}%` : '—' }
-          ].map(stat => (
-            <div key={stat.label} className="bg-[#F5F4F0] rounded-xl p-3 
-              text-center">
-              <p className="text-base font-bold text-[#1A1A2E] 
-                font-['Space_Mono']">{stat.value}</p>
-              <p className="text-[9px] text-[#9A9590] font-['Space_Mono'] 
-                uppercase tracking-wider mt-0.5">{stat.label}</p>
-            </div>
-          ))}
-        </div>
+        {digest ? (
+          <p className="text-xs text-[#9A9590] font-['Inter'] mb-2">
+            {digest.questsDone} quests · {digest.totalXP} XP · 
+            {digest.healthDays}/7 health days · {digest.avgScore}% avg
+          </p>
+        ) : (
+          <p className="text-xs text-[#9A9590] font-['Inter'] mb-2">
+            Generate your weekly summary
+          </p>
+        )}
 
         {digestExpanded && (
           <div>
+            {/* Stats row inside expanded section */}
+            <div className="grid grid-cols-4 gap-3 mb-4">
+              {[
+                { label: 'Quests', value: digest?.questsDone ?? '—' },
+                { label: 'XP', value: digest?.totalXP ?? '—' },
+                { label: 'Health Days', value: digest ? `${digest.healthDays}/7` : '—' },
+                { label: 'Avg Score', value: digest ? `${digest.avgScore}%` : '—' }
+              ].map(stat => (
+                <div key={stat.label} className="bg-[#F5F4F0] rounded-xl p-3 
+                  text-center">
+                  <p className="text-base font-bold text-[#1A1A2E] 
+                    font-['Space_Mono']">{stat.value}</p>
+                  <p className="text-[9px] text-[#9A9590] font-['Space_Mono'] 
+                    uppercase tracking-wider mt-0.5">{stat.label}</p>
+                </div>
+              ))}
+            </div>
+
             {!digest && !isGeneratingDigest && (
               <button
                 onClick={generateWeeklyDigest}
@@ -351,12 +631,31 @@ const CommandCenter = () => {
                 </button>
               </div>
             )}
+
+            {/* Correlations moved inside digest */}
+            {correlations && correlations.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-[#E5E0D8]">
+                <p className="text-[9px] font-bold text-[#9A9590]
+                  font-['Space_Mono'] uppercase tracking-widest mb-2">
+                  Your Patterns
+                </p>
+                {correlations.map((insight, i) => (
+                  <div key={i} className="flex items-start gap-2 mb-1.5">
+                    <span className="text-sm shrink-0">{insight.icon}</span>
+                    <p className="text-xs text-[#1A1A2E] font-['Inter']
+                      leading-relaxed">
+                      {insight.text}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
 
       {/* ── STATS ROW ── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         {[
           {
             label: 'Level',
@@ -397,23 +696,27 @@ const CommandCenter = () => {
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: i * 0.06 }}
-            className="bg-white rounded-2xl border border-[#E5E0D8] p-4"
+            className="bg-white rounded-2xl border border-[#E5E0D8] p-3"
           >
             <p className="text-[9px] font-bold text-[#9A9590] font-['Space_Mono']
               uppercase tracking-widest mb-2">
               {stat.label}
             </p>
-            <p className="text-xl font-bold text-[#1A1A2E] font-['Space_Mono'] mb-1"
-              style={{ color: stat.color }}>
-              {stat.value}
-            </p>
+            {isDataLoading ? (
+              <Skeleton w="w-24" h="h-7" />
+            ) : (
+              <p className="text-lg font-bold text-[#1A1A2E] font-['Space_Mono'] mb-1"
+                style={{ color: stat.color }}>
+                {stat.value}
+              </p>
+            )}
             <p className="text-[10px] text-[#9A9590] font-['Inter']">{stat.sub}</p>
             {stat.progress !== undefined && (
               <div className="mt-2 h-1 bg-[#F5F4F0] rounded-full overflow-hidden">
                 <div
                   className="h-full rounded-full transition-all duration-700"
                   style={{
-                    width: `${stat.progress}%`,
+                    width: `${isDataLoading ? 0 : stat.progress}%`,
                     backgroundColor: stat.progressColor
                   }}
                 />
@@ -423,11 +726,141 @@ const CommandCenter = () => {
         ))}
       </div>
 
+      {xpVelocityData && (
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-4 mb-6">
+          <p className="text-[9px] font-bold text-[#9A9590]
+            font-['Space_Mono'] uppercase tracking-widest mb-2">
+            XP Velocity
+          </p>
+          <div className="flex items-end justify-between">
+            <div>
+              <p className="text-xl font-bold text-[#1A1A2E]
+                font-['Space_Mono']">
+                {xpVelocityData.thisWeek.toLocaleString()}
+              </p>
+              <p className="text-[9px] text-[#9A9590] 
+                font-['Space_Mono'] uppercase tracking-wider">
+                This Week
+              </p>
+            </div>
+            {xpVelocityData.trend !== null && (
+              <div className="text-right">
+                <p className="text-sm font-bold font-['Space_Mono']"
+                  style={{ 
+                    color: xpVelocityData.trend >= 0 
+                      ? '#1A6B4A' : '#C0392B' 
+                  }}>
+                  {xpVelocityData.trend >= 0 ? '+' : ''}
+                  {xpVelocityData.trend}%
+                </p>
+                <p className="text-[9px] text-[#9A9590] 
+                  font-['Space_Mono'] uppercase tracking-wider">
+                  vs last week
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ── MAIN CONTENT ── */}
       <div className="flex flex-col lg:flex-row gap-5">
 
         {/* LEFT — Daily Quests */}
         <div className="flex-1 flex flex-col gap-5">
+
+          {/* JARVIS PATTERNS */}
+          {patternsLoaded && patterns.length > 0 && showPatterns && (
+            <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-[10px] font-bold text-[#9A9590]
+                  font-['Space_Mono'] uppercase tracking-widest">
+                  JARVIS Patterns
+                </p>
+                <button
+                  onClick={() => setShowPatterns(false)}
+                  className="text-[9px] text-[#9A9590] font-['Space_Mono']
+                    uppercase tracking-wider hover:text-[#1A1A2E]"
+                >
+                  Dismiss
+                </button>
+              </div>
+              <div className="space-y-2">
+                {patterns.map((pattern, i) => (
+                  <div
+                    key={i}
+                    className={`flex items-start gap-3 p-3 rounded-xl
+                      border
+                      ${pattern.type === 'danger' 
+                        ? 'bg-[#C0392B]/5 border-[#C0392B]/20'
+                        : pattern.type === 'warning'
+                          ? 'bg-[#E07B39]/5 border-[#E07B39]/20'
+                          : pattern.type === 'success'
+                            ? 'bg-[#1A6B4A]/5 border-[#1A6B4A]/20'
+                            : 'bg-[#F5F4F0] border-[#E5E0D8]'}`}
+                  >
+                    <span className="text-base shrink-0">{pattern.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-bold text-[#1A1A2E]
+                        font-['Inter']">
+                        {pattern.title}
+                      </p>
+                      <p className="text-[10px] text-[#9A9590] 
+                        font-['Inter'] mt-0.5">
+                        {pattern.message}
+                      </p>
+                      <p className="text-[10px] font-bold text-[#E07B39]
+                        font-['Space_Mono'] uppercase tracking-wider mt-1">
+                        → {pattern.action}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* DOMAIN IMBALANCE ALERTS */}
+          {domainAlerts.length > 0 && !domainAlertsDismissed && (
+            <div className="bg-white rounded-2xl border border-[#E5E0D8] p-4">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-[10px] font-bold text-[#9A9590]
+                  font-['Space_Mono'] uppercase tracking-widest">
+                  Domain Balance
+                </p>
+                <button
+                  onClick={() => setDomainAlertsDismissed(true)}
+                  className="text-[9px] text-[#9A9590] font-['Space_Mono']
+                    uppercase tracking-wider"
+                >
+                  Dismiss
+                </button>
+              </div>
+              {domainAlerts.map((alert, i) => (
+                <div key={i} 
+                  className={`flex items-center gap-3 p-2.5 rounded-xl 
+                    mb-1.5 border
+                    ${alert.severity === 'high'
+                      ? 'bg-[#C0392B]/5 border-[#C0392B]/20'
+                      : alert.severity === 'medium'
+                        ? 'bg-[#E07B39]/5 border-[#E07B39]/20'
+                        : 'bg-[#F5F4F0] border-[#E5E0D8]'}`}
+                >
+                  <span className="text-base">{alert.icon}</span>
+                  <p className="text-xs text-[#1A1A2E] font-['Inter'] flex-1">
+                    {alert.message}
+                  </p>
+                  <span className={`text-[8px] font-bold 
+                    font-['Space_Mono'] uppercase tracking-wider
+                    ${alert.severity === 'high' 
+                      ? 'text-[#C0392B]' 
+                      : 'text-[#E07B39]'}`}>
+                    {alert.severity}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Daily Quests */}
           <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
@@ -457,6 +890,18 @@ const CommandCenter = () => {
                   uppercase tracking-wider hover:text-[#1A1A2E] transition-colors
                   flex items-center gap-1">
                 All <ChevronRight size={11}/>
+                {weeklyCompletionRate > 0 && (
+                  <span className="text-[9px] font-bold font-['Space_Mono']
+                    px-1.5 py-0.5 rounded-full ml-1"
+                    style={{
+                      backgroundColor: weeklyCompletionRate >= 80 
+                        ? '#1A6B4A20' : '#E07B3920',
+                      color: weeklyCompletionRate >= 80 
+                        ? '#1A6B4A' : '#E07B39'
+                    }}>
+                    {weeklyCompletionRate}%
+                  </span>
+                )}
               </a>
             </div>
 
@@ -471,7 +916,8 @@ const CommandCenter = () => {
 
             <div className="flex flex-col gap-2">
               {dailyQuests?.slice(0, 8).map((quest, i) => {
-                const isDone = todayCompletions?.includes(quest.id);
+                if (!quest.title || quest.title.trim() === '') return null; // skip corrupt rows
+                const isDone = todayCompletions?.some(c => c.quest_id === quest.id);
                 return (
                   <motion.div
                     key={quest.id || i}
@@ -502,7 +948,7 @@ const CommandCenter = () => {
                         ? 'text-[#9A9590] line-through font-normal'
                         : 'text-[#1A1A2E] font-medium'
                     )}>
-                      {quest.title}
+                      {quest.title || quest.name || 'Quest'}
                     </p>
                     {quest.xp_reward && (
                       <span className="text-[10px] font-bold font-['Space_Mono']
@@ -565,9 +1011,9 @@ const CommandCenter = () => {
               ].map((d, i) => {
                 const Icon = d.icon;
                 return (
-                  <a key={i} href={d.link}
+                  <button key={i} onClick={() => navigate(d.link)}
                     className="bg-white rounded-2xl border border-[#E5E0D8]
-                      p-4 hover:shadow-md transition-all group"
+                      p-3.5 hover:shadow-md transition-all group text-left"
                   >
                     <div className="flex items-center gap-2 mb-3">
                       <div className="w-8 h-8 rounded-xl flex items-center
@@ -580,19 +1026,14 @@ const CommandCenter = () => {
                         {d.domain}
                       </p>
                     </div>
-                    <p className="text-sm font-bold font-['Inter']"
-                      style={{ color: d.color }}>
-                      {d.stat}
-                    </p>
-                    <p className="text-[10px] text-[#9A9590] font-['Inter'] mt-0.5">
-                      {d.sub}
-                    </p>
-                    <div className="flex items-center gap-1 mt-3 text-[9px]
-                      font-bold text-[#9A9590] font-['Space_Mono'] uppercase
-                      tracking-wider group-hover:text-[#1A1A2E] transition-colors">
-                      Open <ChevronRight size={10}/>
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-bold font-['Inter']"
+                        style={{ color: d.color }}>
+                        {d.stat}
+                      </p>
+                      <ChevronRight size={14} className="text-[#9A9590] group-hover:text-[#1A1A2E] transition-colors"/>
                     </div>
-                  </a>
+                  </button>
                 );
               })}
             </div>
@@ -700,7 +1141,7 @@ const CommandCenter = () => {
                   <div key={i} className="flex items-center gap-2">
                     <Zap size={11} className="text-[#E07B39] shrink-0"/>
                     <p className="text-[10px] text-white/60 font-['Inter'] truncate">
-                      {quest?.title || 'Quest completed'}
+                      {quest?.title || quest?.name || 'Quest'}
                     </p>
                   </div>
                 );

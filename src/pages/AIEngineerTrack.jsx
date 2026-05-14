@@ -9,7 +9,7 @@ import {
   Check, Circle, ExternalLink, Zap, Target,
   TrendingUp, Clock, Star, Layers, Bot,
   RefreshCw, X, Building, Wallet, Calendar,
-  ArrowRight, Compass, BarChart3
+  ArrowRight, Compass, BarChart3, Trophy
 } from 'lucide-react'
 
 const AIEngineerTrack = () => {
@@ -20,15 +20,23 @@ const AIEngineerTrack = () => {
   const [explorerTopic, setExplorerTopic] = useState(null)
   const [notesTopicId, setNotesTopicId] = useState(null)
   const [notesValue, setNotesValue] = useState('')
+  const [minuteInputs, setMinuteInputs] = useState({})
   const notesTimer = useRef(null)
 
   const {
-    progress, isLoadingProgress, isGeneratingExploration, activeExploration,
-    loadProgress, togglePhase1, togglePhase2, saveTopicNotes,
-    generateExploration, loadExploration, clearExploration
+    progress, difficultyRatings, isLoadingProgress, isGeneratingExploration, activeExploration,
+    completedClusters, clusterCompletionLoaded,
+    topicMinutes, loadTopicTime, logTopicTime, getSectionMinutes, getClusterMinutes, getSlowestTopics,
+    loadProgress, loadCompletedClusters, togglePhase1, togglePhase2, checkClusterCompletion,
+    saveTopicNotes, generateExploration, loadExploration, clearExploration,
+    rateTopic, getRevisionQueue
   } = useAiTrackStore()
 
-  useEffect(() => { loadProgress() }, [])
+  useEffect(() => { 
+    loadProgress()
+    loadCompletedClusters()
+    loadTopicTime()
+  }, [])
 
   // Overall stats
   const allTopics = useMemo(() => {
@@ -127,6 +135,94 @@ const AIEngineerTrack = () => {
     notesTimer.current = setTimeout(() => {
       saveTopicNotes(topicId, val)
     }, 1500)
+  }
+
+  const renderRoadmapTab = () => {
+    const slowestTopics = getSlowestTopics()
+    return (
+      <div className="flex flex-col gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {AI_TRACK_DATA.clusters.map((cluster, i) => {
+            const clusterTopics = cluster.sections.flatMap(s => s.topics)
+            const clusterDone = clusterTopics.filter(t => progress[t.id]?.phase2_done).length
+            const clusterPercent = clusterTopics.length > 0 ? Math.round((clusterDone / clusterTopics.length) * 100) : 0
+
+            return (
+              <motion.div
+                key={cluster.id}
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: i * 0.1 }}
+                onClick={() => {
+                  setActiveCluster(cluster.id)
+                  setActiveSection(null)
+                }}
+                className={clsx(
+                  'bg-white rounded-2xl border p-5 cursor-pointer transition-all',
+                  activeCluster === cluster.id
+                    ? 'border-[#1A1A2E] ring-4 ring-[#1A1A2E]/5'
+                    : 'border-[#E5E0D8] hover:border-[#1A1A2E]/30'
+                )}
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-6 h-6 rounded-lg flex items-center justify-center text-white text-[10px] font-bold font-['Space_Mono']"
+                      style={{ backgroundColor: cluster.color }}>
+                      {cluster.id}
+                    </div>
+                    <p className="text-sm font-bold text-[#1A1A2E] font-['Inter']">{cluster.name}</p>
+                  </div>
+                  <p className="text-[10px] font-bold font-['Space_Mono']" style={{ color: cluster.color }}>{clusterPercent}%</p>
+                </div>
+
+                {completedClusters[cluster.id] && (
+                  <div className="flex items-center gap-1.5 mt-2.5">
+                    <Trophy size={11} style={{ color: cluster.color }}/>
+                    <p className="text-[10px] font-bold font-['Space_Mono'] uppercase tracking-wider" style={{ color: cluster.color }}>
+                      Mastered {completedClusters[cluster.id].completedAt}
+                    </p>
+                  </div>
+                )}
+
+                {getClusterMinutes(cluster.id) > 0 && (
+                  <p className="text-[9px] text-[#9A9590] font-['Space_Mono'] uppercase tracking-wider mt-1">
+                    {getClusterMinutes(cluster.id) >= 60 
+                      ? `${Math.floor(getClusterMinutes(cluster.id)/60)}h ${getClusterMinutes(cluster.id)%60}m` 
+                      : `${getClusterMinutes(cluster.id)}m`} logged
+                  </p>
+                )}
+
+                <div className="h-1 bg-[#F5F4F0] rounded-full overflow-hidden mt-3">
+                  <div className="h-full rounded-full" style={{ width: `${clusterPercent}%`, backgroundColor: cluster.color }} />
+                </div>
+              </motion.div>
+            )
+          })}
+        </div>
+
+        {slowestTopics.length >= 3 && (
+          <div className="bg-white rounded-2xl border border-[#E5E0D8] p-4">
+            <p className="text-[10px] font-bold text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest mb-3">
+              Time Investment
+            </p>
+            <div className="space-y-2">
+              {slowestTopics.slice(0,3).map((t) => (
+                <div key={t.topicId} className="flex items-center justify-between">
+                  <p className="text-xs text-[#1A1A2E] font-['Inter'] flex-1 truncate mr-2">
+                    {t.topicTitle}
+                  </p>
+                  <span className="text-xs font-bold text-[#E07B39] font-['Space_Mono'] shrink-0">
+                    {t.minutes >= 60 
+                      ? `${Math.floor(t.minutes/60)}h ${t.minutes%60}m`
+                      : `${t.minutes}m`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -234,7 +330,8 @@ const AIEngineerTrack = () => {
         {[
           { id: 'roadmap', label: 'Roadmap', icon: Layers },
           { id: 'explorer', label: 'Books & Papers', icon: BookOpen },
-          { id: 'placement', label: 'Placement', icon: Building }
+          { id: 'placement', label: 'Placement', icon: Building },
+          { id: 'revision', label: 'Revision Queue', icon: BarChart3 }
         ].map(tab => {
           const Icon = tab.icon
           return (
@@ -287,65 +384,6 @@ const AIEngineerTrack = () => {
               </div>
             </div>
 
-            {/* Cluster tabs */}
-            <div className="flex flex-col gap-2 mb-4">
-              {AI_TRACK_DATA.clusters.map(cluster => {
-                const clusterTopics = cluster.sections.flatMap(s => s.topics)
-                const clusterDone = clusterTopics.filter(
-                  t => progress[t.id]?.phase2_done
-                ).length
-                const clusterPercent = clusterTopics.length > 0 ? Math.floor(
-                  (clusterDone / clusterTopics.length) * 100
-                ) : 0
-                const isActive = activeCluster === cluster.id
-
-                return (
-                  <button
-                    key={cluster.id}
-                    onClick={() => {
-                      setActiveCluster(cluster.id)
-                      setActiveSection(null)
-                      setExpandedTopic(null)
-                    }}
-                    className={clsx(
-                      'w-full text-left p-4 rounded-xl border transition-all',
-                      isActive
-                        ? 'bg-white border-[#E5E0D8] shadow-sm'
-                        : 'bg-white/50 border-transparent hover:border-[#E5E0D8]'
-                    )}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <div className="w-6 h-6 rounded-lg flex items-center
-                          justify-center text-white text-[10px] font-bold
-                          font-['Space_Mono']"
-                          style={{ backgroundColor: cluster.color }}
-                        >
-                          {cluster.id}
-                        </div>
-                        <p className="text-xs font-bold text-[#1A1A2E]
-                          font-['Inter']">
-                          {cluster.name}
-                        </p>
-                      </div>
-                      <p className="text-[10px] font-bold font-['Space_Mono']"
-                        style={{ color: cluster.color }}>
-                        {clusterPercent}%
-                      </p>
-                    </div>
-                    <div className="h-1 bg-[#F5F4F0] rounded-full overflow-hidden">
-                      <div className="h-full rounded-full transition-all"
-                        style={{
-                          width: `${clusterPercent}%`,
-                          backgroundColor: cluster.color
-                        }}
-                      />
-                    </div>
-                  </button>
-                )
-              })}
-            </div>
-
             {/* Section list for active cluster */}
             {activeClusterData && (
               <div className="flex flex-col gap-1.5">
@@ -386,7 +424,7 @@ const AIEngineerTrack = () => {
                           'text-[9px] font-["Space_Mono"]',
                           isActive ? 'text-white/50' : 'text-[#9A9590]'
                         )}>
-                          {stats.p2}/{stats.total} studied
+                          {stats.p2}/{stats.total} studied {getSectionMinutes(section.id) > 0 ? `· ${getSectionMinutes(section.id)}m` : ''}
                         </p>
                       </div>
                       <ChevronRight size={12} className={
@@ -402,20 +440,7 @@ const AIEngineerTrack = () => {
           {/* RIGHT — Section content */}
           <div className="flex-1 min-w-0">
 
-            {/* No section selected */}
-            {!activeSection && (
-              <div className="flex flex-col items-center justify-center
-                py-20 text-center">
-                <Layers size={32} className="text-[#E5E0D8] mb-3"/>
-                <p className="text-sm font-bold text-[#1A1A2E] font-['Inter'] mb-1">
-                  Select a section to start
-                </p>
-                <p className="text-xs text-[#9A9590] font-['Inter']">
-                  Choose from {activeClusterData?.sections.length} sections 
-                  in Cluster {activeCluster}
-                </p>
-              </div>
-            )}
+            {!activeSection && renderRoadmapTab()}
 
             {/* Section content */}
             {activeSection && (() => {
@@ -535,111 +560,6 @@ const AIEngineerTrack = () => {
                         </a>
                       )}
                     </div>
-
-                    {/* Section books */}
-                    {section.books?.length > 0 && (
-                      <div className="mt-4 pt-4 border-t border-[#F5F4F0]">
-                        <p className="text-[9px] font-bold text-[#9A9590]
-                          font-['Space_Mono'] uppercase tracking-widest mb-2">
-                          Books for this section
-                        </p>
-                        <div className="flex flex-col gap-2">
-                          {section.books.map((book, bi) => (
-                            <div key={bi} className="flex items-start gap-3
-                              bg-[#F5F4F0] rounded-xl p-3">
-                              <BookOpen size={14} className="text-[#9A9590]
-                                shrink-0 mt-0.5"/>
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <p className="text-xs font-bold text-[#1A1A2E]
-                                    font-['Inter']">
-                                    {book.title}
-                                  </p>
-                                  <span className={clsx(
-                                    'text-[9px] font-bold font-["Space_Mono"]',
-                                    'uppercase px-1.5 py-0.5 rounded-full',
-                                    book.difficulty === 'Dense'
-                                      ? 'bg-red-50 text-red-600'
-                                      : book.difficulty === 'Intermediate'
-                                      ? 'bg-yellow-50 text-yellow-600'
-                                      : 'bg-green-50 text-green-600'
-                                  )}>
-                                    {book.difficulty}
-                                  </span>
-                                  {book.free && (
-                                    <span className="text-[9px] font-bold
-                                      font-['Space_Mono'] uppercase px-1.5
-                                      py-0.5 rounded-full bg-emerald-50
-                                      text-emerald-700">
-                                      Free
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-[10px] text-[#9A9590]
-                                  font-['Space_Mono'] mb-1">
-                                  {book.author}
-                                </p>
-                                <p className="text-[10px] text-[#3D3830]
-                                  font-['Inter'] leading-relaxed">
-                                  {book.why}
-                                </p>
-                                {book.url && (
-                                  <a href={book.url} target="_blank"
-                                    rel="noreferrer"
-                                    className="text-[9px] text-[#1A6B4A]
-                                      font-['Space_Mono'] uppercase tracking-wider
-                                      flex items-center gap-1 mt-1 hover:underline">
-                                    Read free <ExternalLink size={9}/>
-                                  </a>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Section papers */}
-                    {section.papers?.length > 0 && (
-                      <div className="mt-4 pt-4 border-t border-[#F5F4F0]">
-                        <p className="text-[9px] font-bold text-[#9A9590]
-                          font-['Space_Mono'] uppercase tracking-widest mb-2">
-                          Research papers
-                        </p>
-                        <div className="flex flex-col gap-2">
-                          {section.papers.map((paper, pi) => (
-                            <div key={pi} className="flex items-start gap-3
-                              bg-[#1A1A2E] rounded-xl p-3">
-                              <FlaskConical size={14} className="text-[#E07B39]
-                                shrink-0 mt-0.5"/>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs font-bold text-white
-                                  font-['Inter'] mb-0.5">
-                                  {paper.title}
-                                </p>
-                                <p className="text-[9px] text-white/40
-                                  font-['Space_Mono'] mb-1">
-                                  {paper.authors} · {paper.year}
-                                </p>
-                                <p className="text-[10px] text-white/60
-                                  font-['Inter'] leading-relaxed">
-                                  {paper.why}
-                                </p>
-                                {paper.url && (
-                                  <a href={paper.url} target="_blank"
-                                    rel="noreferrer"
-                                    className="text-[9px] text-[#E07B39]
-                                      font-['Space_Mono'] uppercase tracking-wider
-                                      flex items-center gap-1 mt-1.5">
-                                    Read paper <ExternalLink size={9}/>
-                                  </a>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
                   </div>
 
                   {/* Topics list */}
@@ -693,14 +613,15 @@ const AIEngineerTrack = () => {
                                     <Compass size={10} className="text-white"/>
                                   )}
                                 </button>
-                                {/* Phase 2 — Study */}
+                                { /* Phase 2 — Study */ }
                                 <button
-                                  onClick={e => {
+                                  onClick={async (e) => {
                                     e.stopPropagation()
-                                    togglePhase2(
+                                    await togglePhase2(
                                       topic.id, topic.title,
                                       section.id, activeCluster
                                     )
+                                    await checkClusterCompletion(activeCluster, activeClusterData?.name)
                                   }}
                                   title="Mark Week 2 Studied"
                                   className={clsx(
@@ -739,20 +660,6 @@ const AIEngineerTrack = () => {
 
                               {/* Status badges */}
                               <div className="flex items-center gap-2 shrink-0">
-                                {tp.phase1_done && !tp.phase2_done && (
-                                  <span className="text-[9px] font-bold
-                                    font-['Space_Mono'] uppercase px-2 py-0.5
-                                    rounded-full bg-[#FFF0E6] text-[#E07B39]">
-                                    Explored
-                                  </span>
-                                )}
-                                {tp.phase2_done && (
-                                  <span className="text-[9px] font-bold
-                                    font-['Space_Mono'] uppercase px-2 py-0.5
-                                    rounded-full bg-emerald-50 text-emerald-700">
-                                    Done
-                                  </span>
-                                )}
                                 {isExpanded
                                   ? <ChevronUp size={14}
                                       className="text-[#9A9590]"/>
@@ -971,29 +878,119 @@ const AIEngineerTrack = () => {
                                       </motion.div>
                                     )}
 
-                                    {/* Notes editor */}
-                                    <div>
-                                      <p className="text-[9px] font-bold
-                                        text-[#9A9590] font-['Space_Mono']
-                                        uppercase tracking-widest mb-2">
-                                        My Notes
+                                    <div className="mt-3 pt-3 border-t border-[#E5E0D8]">
+                                      <p className="text-[9px] font-bold text-[#9A9590]
+                                        font-['Space_Mono'] uppercase tracking-widest mb-2">
+                                        Time Logged
                                       </p>
-                                      <textarea
-                                        value={notesTopicId === topic.id
-                                          ? notesValue : ''}
-                                        onChange={e => handleNotesChange(
-                                          e.target.value, topic.id
-                                        )}
-                                        placeholder="Write your insights, links, or key takeaways..."
-                                        className="w-full bg-[#F5F4F0] border
-                                          border-transparent focus:border-[#E07B39]
-                                          rounded-xl p-3 text-sm font-['Inter']
-                                          text-[#1A1A2E] placeholder-[#9A9590]
-                                          resize-none focus:outline-none
-                                          transition-all min-h-[80px]"
-                                      />
+                                      <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-1 bg-[#F5F4F0] 
+                                          rounded-xl px-3 py-1.5">
+                                          <span className="text-xs font-bold text-[#1A6B4A]
+                                            font-['Space_Mono']">
+                                            {topicMinutes[topic.id] 
+                                              ? `${topicMinutes[topic.id]}m total` 
+                                              : '0m'}
+                                          </span>
+                                        </div>
+                                        <input
+                                          type="number"
+                                          min={1}
+                                          max={300}
+                                          placeholder="+ mins"
+                                          value={minuteInputs[topic.id] || ''}
+                                          onChange={e => setMinuteInputs(prev => ({
+                                            ...prev,
+                                            [topic.id]: e.target.value
+                                          }))}
+                                          className="w-20 bg-[#F5F4F0] rounded-xl px-3 py-1.5
+                                            text-xs text-[#1A1A2E] font-['Space_Mono']
+                                            border border-[#E5E0D8] focus:outline-none
+                                            focus:border-[#E07B39] text-center"
+                                        />
+                                        <button
+                                          onClick={() => {
+                                            const mins = parseInt(minuteInputs[topic.id])
+                                            if (mins > 0) {
+                                              logTopicTime(
+                                                topic.id, topic.title, 
+                                                section.id, activeCluster, mins
+                                              )
+                                              setMinuteInputs(prev => ({ ...prev, [topic.id]: '' }))
+                                            }
+                                          }}
+                                          className="bg-[#E07B39] text-white px-3 py-1.5 
+                                            rounded-xl text-[10px] font-bold font-['Space_Mono']
+                                            uppercase tracking-wider"
+                                        >
+                                          Log
+                                        </button>
+                                      </div>
                                     </div>
-                                  </div>
+
+                                    {/* Notes editor */}
+                                      <div>
+                                        <p className="text-[9px] font-bold
+                                          text-[#9A9590] font-['Space_Mono']
+                                          uppercase tracking-widest mb-2">
+                                          My Notes
+                                        </p>
+                                        <textarea
+                                          value={notesTopicId === topic.id
+                                            ? notesValue : ''}
+                                          onChange={e => handleNotesChange(
+                                            e.target.value, topic.id
+                                          )}
+                                          placeholder="Write your insights, links, or key takeaways..."
+                                          className="w-full bg-[#F5F4F0] border
+                                            border-transparent focus:border-[#E07B39]
+                                            rounded-xl p-3 text-sm font-['Inter']
+                                            text-[#1A1A2E] placeholder-[#9A9590]
+                                            resize-none focus:outline-none
+                                            transition-all min-h-[80px]"
+                                        />
+                                      </div>
+
+                                      {/* Difficulty Rating */}
+                                      {tp.phase2_done && (
+                                        <div className="mt-3 pt-3 border-t border-[#E5E0D8]">
+                                          <p className="text-[9px] font-bold text-[#9A9590]
+                                            font-['Space_Mono'] uppercase tracking-widest mb-2">
+                                            How Hard Was This?
+                                          </p>
+                                          <div className="flex gap-1.5">
+                                            {[1, 2, 3, 4, 5].map(star => (
+                                              <button
+                                                key={star}
+                                                onClick={() => rateTopic(
+                                                  topic.id, 
+                                                  topic.title,
+                                                  section.id,
+                                                  activeCluster,
+                                                  star
+                                                )}
+                                                className={`w-8 h-8 rounded-lg text-sm font-bold
+                                                  transition-all border
+                                                  ${(difficultyRatings[topic.id] || 0) >= star
+                                                    ? 'bg-[#E07B39] text-white border-[#E07B39]'
+                                                    : 'bg-[#F5F4F0] text-[#9A9590] border-[#E5E0D8]'
+                                                  }`}
+                                              >
+                                                {star}
+                                              </button>
+                                            ))}
+                                            {difficultyRatings[topic.id] && (
+                                              <span className="text-[10px] text-[#9A9590] 
+                                                font-['Space_Mono'] self-center ml-1">
+                                                {difficultyRatings[topic.id] >= 4 
+                                                  ? '→ Added to revision queue' 
+                                                  : 'Rated'}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
                                 </motion.div>
                               )}
                             </AnimatePresence>
@@ -1308,6 +1305,96 @@ const AIEngineerTrack = () => {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════
+          TAB 4 — REVISION QUEUE
+      ══════════════════════════════════════ */}
+      {activeTab === 'revision' && (
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <p className="text-[10px] font-bold text-[#9A9590]
+                font-['Space_Mono'] uppercase tracking-widest mb-0.5">
+                Hard Topics
+              </p>
+              <p className="text-lg font-bold text-[#1A1A2E] 
+                font-['Inter']">
+                Revision Queue
+              </p>
+            </div>
+            <div className="bg-[#C0392B]/10 rounded-xl px-3 py-1.5">
+              <p className="text-sm font-bold text-[#C0392B]
+                font-['Space_Mono']">
+                {getRevisionQueue().length} topics
+              </p>
+            </div>
+          </div>
+
+          {getRevisionQueue().length === 0 ? (
+            <div className="text-center py-16">
+              <div className="w-16 h-16 bg-white rounded-2xl border border-[#E5E0D8]
+                flex items-center justify-center mx-auto mb-4">
+                <BarChart3 size={28} className="text-[#E5E0D8]"/>
+              </div>
+              <p className="text-sm font-bold text-[#1A1A2E] font-['Inter'] mb-1">
+                Queue Clear
+              </p>
+              <p className="text-xs text-[#9A9590] font-['Inter'] max-w-xs mx-auto">
+                Rate topics with a difficulty of 4 or 5 after studying to add them here for focused revision.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {getRevisionQueue().map(({ topicId, rating }) => {
+                // Find topic data from AI_TRACK_DATA
+                let topicData = null
+                AI_TRACK_DATA.clusters.forEach(c => {
+                  c.sections.forEach(s => {
+                    s.topics.forEach(t => {
+                      if (t.id === topicId) topicData = { 
+                        ...t, 
+                        sectionTitle: s.name,
+                        clusterName: c.name 
+                      }
+                    })
+                  })
+                })
+                if (!topicData) return null
+                return (
+                  <div key={topicId}
+                    className="bg-white rounded-2xl border 
+                      border-[#E5E0D8] p-4">
+                    <div className="flex items-start 
+                      justify-between gap-3">
+                      <div className="flex-1">
+                        <p className="text-[9px] font-bold 
+                          text-[#9A9590] font-['Space_Mono'] 
+                          uppercase tracking-wider mb-0.5">
+                          {topicData.clusterName} → {topicData.sectionTitle}
+                        </p>
+                        <p className="text-sm font-bold text-[#1A1A2E]
+                          font-['Inter']">
+                          {topicData.title}
+                        </p>
+                      </div>
+                      <div className="flex gap-0.5 shrink-0">
+                        {[1,2,3,4,5].map(s => (
+                          <div key={s}
+                            className={`w-3 h-3 rounded-sm
+                              ${s <= rating 
+                                ? 'bg-[#C0392B]' 
+                                : 'bg-[#E5E0D8]'}`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       )}
 

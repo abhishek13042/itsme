@@ -30,8 +30,14 @@ const JarvisToast = () => {
     success: { color: '#1A6B4A', bg: '#F0FDF4', border: '#1A6B4A' },
     level: { color: '#7C3AED', bg: '#F5F3FF', border: '#7C3AED' },
     info: { color: '#1A1A2E', bg: '#F5F4F0', border: '#1A1A2E' },
-    warning: { color: '#C0392B', bg: '#FEF2F2', border: '#C0392B' }
+    warning: { color: '#E07B39', bg: '#FFF0E6', border: '#E07B39' },
+    error: { color: '#C0392B', bg: '#FEF2F2', border: '#C0392B' },
+    danger: { color: '#C0392B', bg: '#FEF2F2', border: '#C0392B' }
   }
+
+  const activeType = toast?.type || 'info'
+  const config = typeConfig[activeType] || typeConfig.info
+
 
   return (
     <div className="fixed top-4 right-4 z-[9999] pointer-events-none">
@@ -48,18 +54,20 @@ const JarvisToast = () => {
               className="flex items-start gap-3 p-4 rounded-2xl 
                 shadow-xl border max-w-[320px]"
               style={{
-                backgroundColor: typeConfig[toast.type || 'info'].bg,
-                borderColor: typeConfig[toast.type || 'info'].border,
+                backgroundColor: config.bg,
+                borderColor: config.border,
                 borderWidth: '1.5px'
               }}
+
             >
               {/* Icon */}
               <div
                 className="w-7 h-7 rounded-xl flex items-center 
                   justify-center shrink-0 mt-0.5"
                 style={{
-                  backgroundColor: typeConfig[toast.type || 'info'].color
+                  backgroundColor: config.color
                 }}
+
               >
                 <Zap size={13} className="text-white"/>
               </div>
@@ -69,10 +77,11 @@ const JarvisToast = () => {
                 {toast.title && (
                   <p className="text-[10px] font-bold font-['Space_Mono'] 
                     uppercase tracking-widest mb-0.5"
-                    style={{ color: typeConfig[toast.type || 'info'].color }}
+                    style={{ color: config.color }}
                   >
                     {toast.title}
                   </p>
+
                 )}
                 {toast.xp && (
                   <p className="text-[10px] font-bold font-['Space_Mono'] 

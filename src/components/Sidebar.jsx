@@ -24,12 +24,29 @@ import {
   Wallet,
   Compass,
   GraduationCap,
-  BarChart2
+  BarChart2,
+  Search,
+  Shield
 } from 'lucide-react';
+import { openGlobalSearch } from './GlobalSearch';
 
 const Sidebar = () => {
-  const { xp, level, streakDays } = useXpStore();
+  const { xp, level, streakDays, streakShields } = useXpStore();
   const { balance, transactions } = useWalletStore();
+  const [currentTime, setCurrentTime] = React.useState('');
+
+  React.useEffect(() => {
+    const updateTime = () => {
+      setCurrentTime(new Date().toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        timeZone: 'Asia/Kolkata'
+      }))
+    }
+    updateTime()
+    const interval = setInterval(updateTime, 60000)
+    return () => clearInterval(interval)
+  }, [])
 
   const LEVEL_TITLES = {
     1: 'Initiate', 2: 'Apprentice', 3: 'Practitioner',
@@ -120,6 +137,11 @@ const Sidebar = () => {
             }}>
               <Flame size={11} color="#E07B39" />
               {streakDays}
+              {streakShields > 0 && (
+                <span className="text-xs ml-1" title={`${streakShields} shields`}>
+                  🛡️
+                </span>
+              )}
             </span>
           )}
         </div>
@@ -381,7 +403,6 @@ const Sidebar = () => {
         </p>
 
         {[
-          { to: '/planner', icon: Brain, label: 'AI Planner' },
           { to: '/pomodoro', icon: Timer, label: 'Pomodoro' },
           { to: '/settings', icon: Settings, label: 'Settings' },
         ].map(({ to, icon: Icon, label }) => (
@@ -415,6 +436,26 @@ const Sidebar = () => {
         ))}
       </nav>
 
+      {/* ── SEARCH TRIGGER ── */}
+      <div className="px-3 mb-2">
+        <button
+          onClick={openGlobalSearch}
+          className="flex items-center gap-2 w-full px-4 py-2.5
+            text-[#9A9590] hover:text-[#1A1A2E] hover:bg-[#F5F4F0]
+            rounded-xl transition-all"
+        >
+          <Search size={14}/>
+          <span className="text-[10px] font-bold font-['Space_Mono']
+            uppercase tracking-wider">
+            Search
+          </span>
+          <span className="ml-auto text-[9px] font-['Space_Mono']
+            text-[#9A9590] bg-[#F5F4F0] px-1.5 py-0.5 rounded">
+            ⌘K
+          </span>
+        </button>
+      </div>
+
       {/* ── TODAY'S EARNINGS ── */}
       <div style={{
         padding: '12px 20px 20px',
@@ -446,6 +487,18 @@ const Sidebar = () => {
           </span>
         </div>
       </div>
+
+      <p style={{
+        fontFamily: 'Space Mono',
+        fontSize: '9px',
+        color: '#9A9590',
+        textAlign: 'center',
+        padding: '4px 20px 8px',
+        textTransform: 'uppercase',
+        letterSpacing: '0.06em'
+      }}>
+        {currentTime} IST
+      </p>
 
     </aside>
   );

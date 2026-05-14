@@ -163,7 +163,7 @@ const SDERoadmap = () => {
         </div>
 
         {/* Month Timeline */}
-        <div className="bg-white border border-slate-100 p-2 rounded-2xl shadow-sm flex gap-2 overflow-x-auto no-scrollbar">
+        <div className="bg-white border border-[#E5E0D8] p-2 rounded-2xl shadow-sm flex gap-2 overflow-x-auto no-scrollbar">
           {MONTHS.map(m => (
             <button
               key={m}
@@ -171,8 +171,8 @@ const SDERoadmap = () => {
               className={clsx(
                 "flex-1 min-w-[80px] py-3 rounded-xl text-xs font-bold tracking-widest transition-all",
                 activeMonth === m 
-                  ? "bg-navy-900 text-white shadow-lg shadow-navy-100" 
-                  : "text-slate-400 hover:bg-slate-50"
+                  ? "bg-[#1A1A2E] text-white shadow-lg shadow-[#1A1A2E]/10" 
+                  : "text-[#9A9590] hover:bg-[#F5F4F0]"
               )}
             >
               MONTH {m}
@@ -189,8 +189,8 @@ const SDERoadmap = () => {
               className={clsx(
                 "px-5 py-2 rounded-lg text-xs font-bold tracking-widest whitespace-nowrap transition-all border",
                 activeCategory === cat 
-                  ? "bg-navy-50 border-navy-200 text-navy-700" 
-                  : "bg-white border-slate-100 text-slate-500 hover:border-slate-300"
+                  ? "bg-[#1A1A2E]/5 border-[#1A1A2E]/20 text-[#1A1A2E]" 
+                  : "bg-white border-[#E5E0D8] text-[#9A9590] hover:border-[#9A9590]"
               )}
             >
               {cat}
@@ -201,19 +201,19 @@ const SDERoadmap = () => {
         {/* Chapter List */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {filteredChapters.map(chapter => (
-            <Card key={chapter.chapter_id} className="p-0 overflow-hidden border-slate-200 hover:border-navy-200 transition-all group">
+            <Card key={chapter.chapter_id} className="p-0 overflow-hidden border-[#E5E0D8] hover:border-[#1A1A2E] transition-all group">
               <div className="flex">
                 <div 
                   className="w-1.5" 
-                  style={{ backgroundColor: CATEGORY_COLORS[chapter.category] || '#64748B' }} 
+                  style={{ backgroundColor: CATEGORY_COLORS[chapter.category] || '#9A9590' }} 
                 />
                 <div className="flex-1 p-5">
                   <div className="flex justify-between items-start mb-2">
                     <div className="flex gap-2">
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 bg-slate-100 text-slate-500 rounded uppercase tracking-wider">
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 bg-[#F5F4F0] text-[#9A9590] rounded uppercase tracking-wider">
                         {chapter.category}
                       </span>
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 bg-navy-50 text-navy-600 rounded uppercase tracking-wider">
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 bg-[#1A1A2E]/10 text-[#1A1A2E] rounded uppercase tracking-wider">
                         M{chapter.month_target}
                       </span>
                     </div>
@@ -222,14 +222,14 @@ const SDERoadmap = () => {
                         href={chapter.resource_url} 
                         target="_blank" 
                         rel="noreferrer"
-                        className="p-1.5 hover:bg-slate-100 rounded-md text-slate-400 transition-colors"
+                        className="p-1.5 hover:bg-[#F5F4F0] rounded-md text-[#9A9590] transition-colors"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
                       </a>
                     )}
                   </div>
 
-                  <h3 className="text-[15px] font-bold text-slate-900 mb-4 group-hover:text-navy-900 transition-colors">
+                  <h3 className="text-[15px] font-bold text-[#1A1A2E] mb-4 group-hover:text-[#1A1A2E] transition-colors">
                     {chapter.title}
                   </h3>
 
@@ -245,7 +245,7 @@ const SDERoadmap = () => {
                         value={chapter.notes || ''}
                         onChange={(e) => updateNotes(chapter.chapter_id, e.target.value)}
                         placeholder="Key concepts, takeaways, or links..."
-                        className="w-full bg-slate-50 border border-slate-100 rounded-lg p-3 text-xs text-slate-600 focus:outline-none focus:ring-1 focus:ring-navy-100"
+                        className="w-full bg-[#F5F4F0] border border-[#E5E0D8] rounded-lg p-3 text-xs text-[#3D3830] focus:outline-none focus:ring-1 focus:ring-[#1A1A2E]/10"
                         rows={3}
                       />
                     </div>
@@ -253,7 +253,7 @@ const SDERoadmap = () => {
                     <div className="flex justify-between items-center pt-2">
                       <button 
                         onClick={() => setExpandedNotes(expandedNotes === chapter.chapter_id ? null : chapter.chapter_id)}
-                        className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1 hover:text-navy-600"
+                        className="text-[10px] font-bold text-[#9A9590] uppercase tracking-widest flex items-center gap-1 hover:text-[#1A1A2E]"
                       >
                         <Info className="w-3 h-3" /> {expandedNotes === chapter.chapter_id ? 'Hide Notes' : 'Notes'}
                       </button>
@@ -263,8 +263,8 @@ const SDERoadmap = () => {
                         className={clsx(
                           "px-4 py-1.5 rounded-full text-[10px] font-bold tracking-widest uppercase transition-all",
                           chapter.completed 
-                            ? "bg-success text-white" 
-                            : "bg-slate-100 text-slate-500 hover:bg-amber-100 hover:text-amber-700"
+                            ? "bg-[#1A6B4A] text-white" 
+                            : "bg-[#F5F4F0] text-[#9A9590] hover:bg-[#E07B39]/10 hover:text-[#E07B39]"
                         )}
                       >
                         {chapter.completed ? 'DONE' : 'MARK COMPLETE'}
@@ -276,9 +276,14 @@ const SDERoadmap = () => {
             </Card>
           ))}
           {filteredChapters.length === 0 && (
-            <div className="col-span-full py-20 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
-               <Layers className="w-12 h-12 text-slate-300 mx-auto mb-4" />
-               <p className="text-slate-400 font-bold uppercase tracking-widest text-xs">No chapters assigned for Month {activeMonth} in this category.</p>
+            <div className="col-span-full py-16 text-center">
+               <Layers size={32} className="text-[#E5E0D8] mx-auto mb-3" />
+               <p className="text-sm font-bold text-[#1A1A2E] font-['Inter'] mb-1">
+                 Month {activeMonth} Clear
+               </p>
+               <p className="text-xs text-[#9A9590] font-['Inter'] max-w-xs mx-auto">
+                 No chapters assigned for this category yet. Keep pushing other tracks.
+               </p>
             </div>
           )}
         </div>
@@ -289,12 +294,12 @@ const SDERoadmap = () => {
         
         {/* Completion Donut */}
         <Card className="p-6">
-          <h3 className="text-xs font-bold text-slate-900 uppercase tracking-widest text-center mb-6">Overall Progress</h3>
-          <div className="h-48 w-full">
+          <h3 className="text-xs font-bold text-[#1A1A2E] uppercase tracking-widest text-center mb-6">Overall Progress</h3>
+          <div className="h-48 w-full relative">
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
-                  data={chartData.length > 0 ? chartData : [{ name: 'Pending', value: 1, color: '#F1F3F5' }]}
+                  data={chartData.length > 0 ? chartData : [{ name: 'Pending', value: 1, color: '#F5F4F0' }]}
                   innerRadius={60}
                   outerRadius={80}
                   paddingAngle={5}
@@ -303,7 +308,7 @@ const SDERoadmap = () => {
                   {chartData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.color} />
                   ))}
-                  {chartData.length === 0 && <Cell fill="#F1F3F5" />}
+                  {chartData.length === 0 && <Cell fill="#F5F4F0" />}
                 </Pie>
                 <RechartsTooltip 
                   contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
@@ -312,8 +317,8 @@ const SDERoadmap = () => {
               </PieChart>
             </ResponsiveContainer>
             <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 flex flex-col items-center pointer-events-none">
-              <span className="text-2xl font-display font-bold text-slate-900">{stats.readyPercent}%</span>
-              <span className="text-[10px] font-bold text-slate-400 uppercase">Ready</span>
+              <span className="text-2xl font-['Space_Mono'] font-bold text-[#1A1A2E]">{stats.readyPercent}%</span>
+              <span className="text-[10px] font-bold text-[#9A9590] uppercase">Ready</span>
             </div>
           </div>
 
@@ -321,10 +326,10 @@ const SDERoadmap = () => {
             {stats.categoryData.map(cat => (
               <div key={cat.name} className="space-y-1.5">
                 <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-widest">
-                  <span className="text-slate-500">{cat.name}</span>
-                  <span className="text-slate-900">{cat.value}/{cat.total}</span>
+                  <span className="text-[#9A9590]">{cat.name}</span>
+                  <span className="text-[#1A1A2E]">{cat.value}/{cat.total}</span>
                 </div>
-                <div className="h-1 bg-slate-100 rounded-full overflow-hidden">
+                <div className="h-1 bg-[#F5F4F0] rounded-full overflow-hidden">
                   <div 
                     className="h-full transition-all duration-500"
                     style={{ 
@@ -340,7 +345,7 @@ const SDERoadmap = () => {
 
         {/* Resources */}
         <Card className="p-6">
-          <h3 className="text-xs font-bold text-slate-900 uppercase tracking-widest mb-4">Resources</h3>
+          <h3 className="text-xs font-bold text-[#1A1A2E] uppercase tracking-widest mb-4">Resources</h3>
           <div className="space-y-3">
             {[
               { label: 'Striver A2Z', icon: '📚' },
@@ -352,13 +357,13 @@ const SDERoadmap = () => {
             ].map(res => (
               <button 
                 key={res.label}
-                className="w-full flex items-center justify-between p-2.5 rounded-xl hover:bg-slate-50 border border-transparent hover:border-slate-100 transition-all text-xs font-medium text-slate-700"
+                className="w-full flex items-center justify-between p-2.5 rounded-xl hover:bg-[#F5F4F0] border border-transparent hover:border-[#E5E0D8] transition-all text-xs font-medium text-[#3D3830]"
               >
                 <div className="flex items-center gap-3">
                   <span className="text-base">{res.icon}</span>
                   <span>{res.label}</span>
                 </div>
-                <ChevronRight className="w-4 h-4 text-slate-300" />
+                <ChevronRight className="w-4 h-4 text-[#9A9590]" />
               </button>
             ))}
           </div>

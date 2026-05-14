@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { loadAllMemoriesForContext } from './globalMemory'
 
 /**
  * Aggregates entire Player One state for AI Context
@@ -137,7 +138,9 @@ export async function collectFullContext() {
           currentStreak: playerData?.streak_days || 0,
           lastWorkout: healthData?.log_date
         },
-        recentMemory: memorySnapshot
+        recentMemory: memorySnapshot,
+        globalMemory: (await loadAllMemoriesForContext()).formatted,
+        memoryByType: (await loadAllMemoriesForContext())
       };
     } catch (err) {
       console.error('Inner fetch error:', err);

@@ -9,6 +9,10 @@ import Card from '../components/Card';
 import Button from '../components/Button';
 import ProgressBar from '../components/ProgressBar';
 import MotivationalPopup from '../components/MotivationalPopup';
+import GymChecklist from '../components/GymChecklist';
+import { supabase } from '../lib/supabase';
+import { getTodayIST } from '../lib/dateUtils';
+import { loadMemories, saveMemory, MEMORY_TYPES } from '../lib/globalMemory'
 import { 
   Flame, 
   Dumbbell, 
@@ -20,6 +24,7 @@ import {
   ChevronRight,
   TrendingUp,
   Award,
+  Activity,
   Clock,
   Zap,
   Bath,
@@ -36,7 +41,10 @@ import {
   Wind,
   Star,
   MessageSquare,
-  Trash2
+  Trash2,
+  Bed,
+  Book,
+  Brush
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { format, isSameDay, isToday, addMinutes, parse } from 'date-fns';
@@ -44,7 +52,11 @@ import { clsx } from 'clsx';
 import { awardXP } from '../lib/xpEngine';
 
 const Health = () => {
-  const { todayLog, history, milestones, loading, isLoading, loadHealthData, updateLog, toggleMilestone, submitDay } = useHealthStore();
+  const { 
+    todayLog, history, milestones, loading, isLoading, 
+    loadHealthData, updateLog, toggleMilestone, submitDay,
+    sleepDetails, logSleepDetail 
+  } = useHealthStore();
 
   useEffect(() => {
     if (!todayLog) loadHealthData();
@@ -105,6 +117,11 @@ const Health = () => {
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
+  const [gymChecklistOpen, setGymChecklistOpen] = useState(false);
+  const [gymReadinessScore, setGymReadinessScore] = useState(null);
+  const [readinessTrend, setReadinessTrend] = useState([]);
+  const [bedTime, setBedTime] = useState('');
+  const [wakeTime, setWakeTime] = useState('');
 
   const currentMonth = new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
   const gymStartDate = new Date('2026-06-16');
@@ -119,6 +136,88 @@ const Health = () => {
     loadLastCoachSession();
     loadExerciseLogs();
   }, []);
+
+  useEffect(() => {
+    if (activeSection !== 'physique') return
+    const loadReadinessTrend = async () => {
+      const weekAgo = new Date()
+      weekAgo.setDate(weekAgo.getDate() - 7)
+      const { data } = await supabase
+        .from('ai_sessions')
+        .select('session_date, ai_response')
+        .eq('type', 'gym_readiness')
+        .gte('session_date', weekAgo.toISOString().split('T')[0])
+        .order('session_date', { ascending: true })
+      setReadinessTrend(data || [])
+    }
+    loadReadinessTrend()
+  }, [activeSection])
+
+  useEffect(() => {
+    const todayDetail = sleepDetails?.find(d => 
+      d.date === new Date().toISOString().split('T')[0]
+    )
+    if (todayDetail) {
+      setBedTime(todayDetail.bedTime || '')
+      setWakeTime(todayDetail.wakeTime || '')
+    }
+  }, [sleepDetails])
+
+  const healthTrendData = useMemo(() => {
+    return [...(history || [])]
+      .sort((a, b) => new Date(a.log_date) - new Date(b.log_date))
+      .slice(-30)
+      .map(log => ({
+        date: new Date(log.log_date).toLocaleDateString('en-IN', 
+          { day: '2-digit', month: 'short' }),
+        score: log.day_score || 0
+      }))
+  }, [history])
+
+  const sleepDetailsChartData = useMemo(() => {
+    return [...(sleepDetails || [])]
+      .sort((a, b) => new Date(a.date) - new Date(b.date))
+      .slice(-14)
+      .map(d => ({
+        date: new Date(d.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+        hours: d.hours || 0
+      }))
+  }, [sleepDetails])
+
+  const sleepQuestCorrelation = useMemo(() => {
+    if (!sleepDetails || sleepDetails.length < 5) return null
+    
+    const goodSleepDates = sleepDetails
+      .filter(d => d.hours >= 7)
+      .map(d => d.date)
+    const poorSleepDates = sleepDetails
+      .filter(d => d.hours < 7)
+      .map(d => d.date)
+
+    if (goodSleepDates.length < 2 || poorSleepDates.length < 2) 
+      return null
+
+    const healthOnGoodSleep = (history || [])
+      .filter(l => goodSleepDates.includes(l.log_date))
+      .reduce((s, l) => s + (l.day_score || 0), 0) / 
+      (goodSleepDates.length || 1)
+
+    const healthOnPoorSleep = (history || [])
+      .filter(l => poorSleepDates.includes(l.log_date))
+      .reduce((s, l) => s + (l.day_score || 0), 0) / 
+      (poorSleepDates.length || 1)
+
+    const diff = Math.round(healthOnGoodSleep - healthOnPoorSleep)
+    if (Math.abs(diff) < 5) return null
+
+    return {
+      diff,
+      goodAvg: Math.round(healthOnGoodSleep),
+      poorAvg: Math.round(healthOnPoorSleep),
+      goodCount: goodSleepDates.length,
+      poorCount: poorSleepDates.length
+    }
+  }, [sleepDetails, history])
 
   const loadExerciseLogs = async () => {
     try {
@@ -202,8 +301,16 @@ const Health = () => {
         max_tokens: 500,
         temperature: 0.7
       });
-      const text = result.text;
-      setChatMessages(prev => [...prev, { role: 'assistant', content: text }]);
+
+      if (result.error) {
+        console.error('Groq error:', result.error)
+        setChatMessages(prev => [...prev, { 
+          role: 'assistant', 
+          content: "I'm having trouble connecting to the fitness core. Please check your connection or Groq API key." 
+        }]);
+      } else {
+        setChatMessages(prev => [...prev, { role: 'assistant', content: result.text }]);
+      }
     } catch (err) {
       console.error('Chat error:', err);
       setChatMessages(prev => [...prev, { role: 'assistant', content: "Sorry, I'm having trouble connecting right now." }]);
@@ -313,7 +420,16 @@ const Health = () => {
   const getAiCoach = async (promptType) => {
     setIsAiLoading(true);
     try {
+      let healthContext = ''
+      try {
+        const healthMemory = await loadMemories(MEMORY_TYPES.HEALTH, 5)
+        healthContext = healthMemory.map(m => m.content).join('\n- ')
+      } catch (memErr) {
+        console.error('Failed to load health memory:', memErr)
+      }
+
       const totalCost = healthCosts.reduce((s, c) => s + c.amount_inr, 0);
+
       const latest = latestMeasurement;
       
       const prompts = {
@@ -331,12 +447,30 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
         cost: `Abhishek wants to build a shredded physique on a student budget in Nagpur as a VEGETARIAN. Monthly health spend optimization. Current spend: ₹${totalCost}/month. Give him: 1) Minimum monthly budget for veg protein (soya, paneer, whey), 2) Best value veg protein in India. Max 250 words.`
       };
 
+      const finalPrompt = prompts[promptType] + (healthContext ? `
+      
+      RECENT HEALTH HISTORY:
+      - ${healthContext}
+
+      Reference this history. Build on previous advice.
+      Don't repeat what has already been suggested.
+      ` : '')
+
       const { callGroq } = await import('../lib/groq');
       const result = await callGroq({
-        messages: [{ role: 'user', content: prompts[promptType] }],
+        messages: [{ role: 'user', content: finalPrompt }],
         max_tokens: 800,
         temperature: 0.7
       });
+
+
+      if (result.error) {
+        console.error('Groq error:', result.error)
+        setAiCoachResponse('AI Coach is temporarily offline. Focus on your vegetarian protein targets (Paneer, Soya, Whey).');
+        setIsAiLoading(false);
+        return;
+      }
+
       const text = result.text;
       setAiCoachResponse(text);
       setLastCoachSession(new Date().toISOString());
@@ -346,6 +480,14 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
         prompt_type: promptType,
         ai_response: text
       });
+
+      saveMemory({
+        type: MEMORY_TYPES.HEALTH,
+        content: `Health coach session: ${promptType} — key insight: ${text.substring(0, 150)}`,
+        source: 'health_coach',
+        importance: 6
+      })
+
     } catch (err) {
       console.error('AI coach error:', err);
       setAiCoachResponse('Failed to get AI response. Check your Groq API key.');
@@ -380,7 +522,20 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
         max_tokens: 150,
         temperature: 0.8
       })
-      setDailyAiTip(result.text)
+
+      if (result.error) {
+        console.error('Groq error:', result.error)
+        setDailyAiTip("Consistency is key. Keep hitting your protein targets.")
+      } else {
+        setDailyAiTip(result.text)
+        saveMemory({
+          type: MEMORY_TYPES.HEALTH,
+          content: `Daily tip: ${result.text.substring(0, 150)}`,
+          source: 'health_daily_tip',
+          importance: 4
+        })
+      }
+
       setTipGenerated(true)
     } catch (err) {
       console.error('daily tip error:', err)
@@ -471,6 +626,15 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
         });
     }
   };
+
+  const handleGymToggle = (currentValue) => {
+    if (!currentValue) {
+      setGymChecklistOpen(true)
+    } else {
+      updateLog({ gym_done: false })
+      setGymReadinessScore(null)
+    }
+  }
 
   const handleTimeChange = (id, value) => {
     const updates = { [id]: value };
@@ -649,10 +813,10 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
   }
 
   return (
-    <div className="min-h-screen pb-20 space-y-12 max-w-7xl mx-auto px-4 md:px-8 bg-[#F5F4F0] font-body text-[#3D3830]">
+    <div className="min-h-screen p-4 md:p-6 pb-24 bg-[#F5F4F0] font-body text-[#3D3830]">
       
       {/* HEADER */}
-      <header className="flex flex-col md:flex-row justify-between items-start md:items-center pt-8 gap-4">
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <p className="font-body text-[13px] text-[#9A9590] italic mb-1">{identityLine}</p>
           <h1 className="font-display text-[32px] font-extrabold text-[#1A1A2E] leading-tight uppercase tracking-tight">HEALTH</h1>
@@ -695,34 +859,104 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
       </div>
 
       {/* TODAY'S SCORE SECTION - MOVED TO DAILY TAB */}
-
-      <div className="flex flex-col lg:flex-row gap-8 items-start">
-        {/* MAIN FEED */}
-        <div className="flex-1 space-y-10 order-2 lg:order-1 w-full">
-          
+      <div className="w-full">
           {activeSection === 'daily' && (
-            <div className="space-y-10">
-              {/* AI DAILY HEALTH STRIP */}
+            <div className="space-y-4">
+              {/* Score bar — compact full-width */}
+              <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center 
+                      justify-center shrink-0"
+                      style={{ 
+                        backgroundColor: (todayLog.day_score || 0) >= 80 
+                          ? '#1A6B4A15' 
+                          : (todayLog.day_score || 0) >= 50 
+                            ? '#E07B3915' 
+                            : '#C0392B15' 
+                      }}>
+                      <p className="text-base font-bold font-['Space_Mono']"
+                        style={{ 
+                          color: (todayLog.day_score || 0) >= 80 
+                            ? '#1A6B4A' 
+                            : (todayLog.day_score || 0) >= 50 
+                              ? '#E07B39' 
+                              : '#C0392B' 
+                        }}>
+                        {todayLog.day_score || 0}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest">
+                        Today's Score
+                      </p>
+                      <p className="text-sm font-bold text-[#1A1A2E] 
+                        font-['Inter']">
+                        {todayLog.total_checks || 0}/13 habits · 
+                        ₹{(todayLog.total_checks || 0) * 4} earned
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {(new Date().getHours() >= 18 || 
+                      (todayLog.day_score || 0) === 100) ? (
+                      <button
+                        onClick={handleSubmit}
+                        className="bg-[#1A6B4A] text-white px-4 py-2 
+                          rounded-xl text-xs font-bold font-['Space_Mono']
+                          uppercase tracking-wider hover:opacity-90"
+                      >
+                        Submit Day
+                      </button>
+                    ) : (
+                      <span className="text-[10px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-wider 
+                        bg-[#F5F4F0] px-3 py-1.5 rounded-lg">
+                        In Progress
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="h-1.5 bg-[#F5F4F0] rounded-full overflow-hidden">
+                  <motion.div
+                    initial={{ width: 0 }}
+                    animate={{ width: `${todayLog.day_score || 0}%` }}
+                    transition={{ duration: 0.8, ease: 'easeOut' }}
+                    className="h-full rounded-full"
+                    style={{ 
+                      backgroundColor: (todayLog.day_score || 0) >= 80 
+                        ? '#1A6B4A' 
+                        : (todayLog.day_score || 0) >= 50 
+                          ? '#E07B39' 
+                          : '#C0392B' 
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* AI tip strip — compact version */}
               <div className="bg-[#1A1A2E] rounded-2xl p-4 flex items-center 
-                justify-between gap-4 mb-6">
-                <div className="flex items-center gap-3 flex-1 min-w-0">
-                  <div className={clsx(
-                    'w-8 h-8 rounded-xl flex items-center justify-center shrink-0',
-                    dailyAiLoading ? 'animate-pulse bg-[#E07B39]/20' : 'bg-[#E07B39]/10'
-                  )}>
-                    <Bot size={16} className="text-[#E07B39]"/>
+                justify-between gap-4">
+                <div className="flex items-start gap-3 flex-1 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-[#E07B39]/15 
+                    flex items-center justify-center shrink-0">
+                    <Bot size={15} className="text-[#E07B39]"/>
                   </div>
                   <div className="flex-1 min-w-0">
+                    <p className="text-[9px] font-bold text-white/40
+                      font-['Space_Mono'] uppercase tracking-widest mb-1">
+                      Coach Tip
+                    </p>
                     {!tipGenerated && !dailyAiLoading && (
                       <p className="text-xs text-white/50 font-['Inter']">
-                        Get today's AI coaching tip — personalized to your
-                        current score and workout.
+                        Get today's personalized coaching tip
                       </p>
                     )}
                     {dailyAiLoading && (
-                      <p className="text-xs text-white/50 font-['Space_Mono'] 
-                        uppercase tracking-wider animate-pulse">
-                        Analyzing your day...
+                      <p className="text-xs text-white/40 font-['Space_Mono']
+                        uppercase tracking-wider animate-pulse text-[10px]">
+                        Analyzing...
                       </p>
                     )}
                     {tipGenerated && dailyAiTip && (
@@ -736,183 +970,259 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
                 <button
                   onClick={getDailyAiTip}
                   disabled={dailyAiLoading}
-                  className={clsx(
-                    'shrink-0 text-[10px] font-bold font-["Space_Mono"] uppercase',
-                    'tracking-wider px-3 py-2 rounded-lg transition-all',
-                    'disabled:opacity-40',
-                    tipGenerated
-                      ? 'bg-white/10 text-white/60 hover:bg-white/20'
-                      : 'bg-[#E07B39] text-white hover:opacity-90'
-                  )}
+                  className="shrink-0 text-[9px] font-bold font-['Space_Mono']
+                    uppercase tracking-wider px-3 py-2 rounded-lg transition-all
+                    disabled:opacity-40"
+                  style={{ 
+                    backgroundColor: tipGenerated ? 'rgba(255,255,255,0.08)' : '#E07B39',
+                    color: 'white'
+                  }}
                 >
                   {dailyAiLoading ? '...' : tipGenerated ? 'Refresh' : 'Get Tip'}
                 </button>
               </div>
 
-              {/* TODAY'S SCORE CARD */}
-              <Card className="p-8 border-none bg-white flex flex-col md:flex-row justify-between items-center gap-8 relative overflow-hidden">
-                <div className="z-10 text-center md:text-left">
-                  <p className="font-body text-[11px] font-bold text-[#9A9590] uppercase tracking-widest mb-1">TODAY'S SCORE</p>
-                  <h2 className={clsx(
-                    "font-display text-[56px] font-extrabold leading-none",
-                    (todayLog.day_score || 0) >= 80 ? "text-[#1A6B4A]" : (todayLog.day_score || 0) >= 50 ? "text-[#E07B39]" : "text-[#C0392B]"
-                  )}>
-                    {todayLog.day_score || 0}%
-                  </h2>
-                  <p className="font-mono text-[14px] text-[#9A9590] mt-2">{todayLog.total_checks || 0} / 13 HABITS COMPLETED</p>
-                </div>
-
-                <div className="relative z-10 flex flex-col items-center">
-                  <ScoreRing score={todayLog.day_score || 0} />
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <span className="font-display text-[24px] font-extrabold" style={{ color: (todayLog.day_score || 0) >= 80 ? '#1A6B4A' : '#1A1A2E' }}>
-                      {todayLog.day_score || 0}%
-                    </span>
+              {/* Health trend chart */}
+              {healthTrendData.length >= 7 && (
+                <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="text-[10px] font-bold text-[#9A9590]
+                      font-['Space_Mono'] uppercase tracking-widest">
+                      30-Day Health Score Trend
+                    </p>
+                    <p className="text-xs font-bold font-['Space_Mono']"
+                      style={{
+                        color: healthTrendData.slice(-7)
+                          .reduce((s,d) => s + d.score, 0) / 7 >= 70
+                          ? '#1A6B4A' : '#E07B39'
+                      }}>
+                      7d avg: {Math.round(
+                        healthTrendData.slice(-7)
+                          .reduce((s,d) => s + d.score, 0) / 7
+                      )}%
+                    </p>
                   </div>
+                  <ResponsiveContainer width="100%" height={80}>
+                    <LineChart data={healthTrendData}>
+                      <XAxis dataKey="date" hide/>
+                      <YAxis domain={[0, 100]} hide/>
+                      <Tooltip
+                        contentStyle={{ fontSize: 10, 
+                          fontFamily: 'Space Mono',
+                          borderRadius: 8, border: '1px solid #E5E0D8' }}
+                        formatter={(val) => [`${val}%`, 'Score']}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="score"
+                        stroke="#1A6B4A"
+                        strokeWidth={2}
+                        dot={false}
+                        activeDot={{ r: 4, fill: '#1A6B4A' }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
                 </div>
-
-                <div className="text-center md:text-right z-10">
-                  <p className="font-body text-[11px] font-bold text-[#9A9590] uppercase tracking-widest mb-2">TODAY'S EARNINGS</p>
-                  <div className="flex items-center justify-center md:justify-end gap-2 mb-4">
-                    <span className="font-display text-[32px] font-extrabold text-[#1A6B4A]">₹{todayLog.total_checks * 4}</span>
-                  </div>
-                  
-                  {(new Date().getHours() >= 18 || (todayLog.day_score || 0) === 100) && (
-                    <motion.button
-                      whileHover={{ scale: 1.05 }}
-                      whileTap={{ scale: 0.95 }}
-                      animate={(todayLog.day_score || 0) >= 80 ? { boxShadow: ['0 0 0px #1A6B4A66', '0 0 15px #1A6B4A55', '0 0 0px #1A6B4A66'] } : {}}
-                      transition={{ repeat: Infinity, duration: 2 }}
-                      onClick={handleSubmit}
-                      className="px-8 py-3 bg-[#1A6B4A] text-white font-display text-[14px] font-bold rounded-xl tracking-widest uppercase hover:bg-[#155339] transition-colors"
-                    >
-                      SUBMIT DAY
-                    </motion.button>
-                  )}
-                </div>
-              </Card>
-              {/* SECTION 1 — GYM */}
+              )}
+              {/* SECTION 1 — TRAINING */}
               <section className="space-y-4">
-                 <div className="flex justify-between items-center px-1">
-                   <h3 className="font-body text-[13px] font-bold text-[#9A9590] uppercase tracking-widest">GYM</h3>
-                   <div className="flex items-center gap-2 px-3 py-1 bg-[#FFF0E6] rounded-full">
-                     <span className="text-[11px] font-black text-[#E07B39] tracking-tight uppercase">🔥 {gymStreak} DAY GYM STREAK</span>
-                   </div>
-                 </div>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[10px] font-bold text-[#9A9590]
+                    font-['Space_Mono'] uppercase tracking-widest">
+                    TRAINING
+                  </p>
+                  <span className="text-[9px] font-bold font-['Space_Mono']
+                    uppercase tracking-wider px-2.5 py-1 rounded-lg"
+                    style={{ 
+                      backgroundColor: '#E07B3915',
+                      color: '#E07B39'
+                    }}>
+                    🔥 {gymStreak} day streak
+                  </span>
+                </div>
 
-                 <Card className="p-8 border-l-[4px] border-l-[#E07B39] bg-white space-y-8">
-                   <button 
-                    onClick={() => handleToggle('gym_done', !todayLog.gym_done, 25, 6)}
-                    className={clsx(
-                     "w-full h-14 rounded-xl font-display text-[15px] font-extrabold tracking-widest uppercase transition-all duration-300 flex items-center justify-center gap-3",
-                     todayLog.gym_done ? "bg-[#1A6B4A] text-white" : "bg-[#F5F4F0] text-[#9A9590] border-2 border-transparent hover:border-[#E5E0D8]"
+                <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+                  {/* Top row: toggle + readiness score */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <p className="text-[10px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest mb-1">
+                        Did you train today?
+                      </p>
+                      <button
+                        onClick={() => handleGymToggle(todayLog.gym_done)}
+                        className={clsx(
+                          "flex items-center gap-2 px-4 py-2.5 rounded-xl",
+                          "text-xs font-bold font-['Space_Mono'] uppercase",
+                          "tracking-wider transition-all",
+                          todayLog.gym_done
+                            ? "bg-[#1A6B4A] text-white"
+                            : "bg-[#F5F4F0] text-[#1A1A2E] hover:bg-[#E5E0D8]"
+                        )}
+                      >
+                        {todayLog.gym_done 
+                          ? <><CheckCircle2 size={14}/> Crushed It</>
+                          : <><Dumbbell size={14}/> Log Workout</>
+                        }
+                      </button>
+                    </div>
+                    
+                    {/* Readiness score pill */}
+                    {gymReadinessScore !== null && (
+                      <div className="text-right">
+                        <p className="text-[9px] font-bold text-[#9A9590]
+                          font-['Space_Mono'] uppercase tracking-widest mb-1">
+                          Readiness
+                        </p>
+                        <p className="text-2xl font-bold font-['Space_Mono']"
+                          style={{ 
+                            color: gymReadinessScore >= 75 
+                              ? '#1A6B4A' 
+                              : gymReadinessScore >= 50 
+                                ? '#E07B39' 
+                                : '#C0392B' 
+                          }}>
+                          {gymReadinessScore}%
+                        </p>
+                      </div>
                     )}
-                   >
-                     {todayLog.gym_done ? <Check className="w-5 h-5" /> : null}
-                     {todayLog.gym_done ? 'GYM DONE — KEEP GOING' : 'DID YOU HIT THE GYM TODAY?'}
-                   </button>
+                    
+                    {/* 30-day progress */}
+                    <div className="text-right">
+                      <p className="text-[9px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest mb-1">
+                        30-Day Goal
+                      </p>
+                      <p className="text-sm font-bold text-[#E07B39] 
+                        font-['Space_Mono']">
+                        {gymStreak}/30
+                      </p>
+                      <div className="w-24 h-1 bg-[#F5F4F0] rounded-full 
+                        overflow-hidden mt-1">
+                        <div className="h-full bg-[#E07B39] rounded-full"
+                          style={{ width: `${(gymStreak/30)*100}%` }}/>
+                      </div>
+                    </div>
+                  </div>
 
-                   {todayLog.gym_done && (
-                     <div className="space-y-4 animate-in slide-in-from-top-2">
-                       <p className="text-[11px] font-bold text-[#9A9590] uppercase tracking-widest">Select workout type</p>
-                       <div className="flex flex-wrap gap-2">
-                         {['PUSH', 'PULL', 'LEGS', 'FULL BODY', 'CARDIO', 'REST DAY'].map(t => (
-                           <button
+                  {/* Split selector — only when gym done */}
+                  {todayLog.gym_done && (
+                    <div className="border-t border-[#F5F4F0] pt-4">
+                      <p className="text-[9px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest mb-2">
+                        Select Split
+                      </p>
+                      <div className="flex gap-2 flex-wrap">
+                        {['PUSH', 'PULL', 'LEGS', 'FULL BODY', 'CARDIO', 
+                          'REST DAY'].map(t => (
+                          <button
                             key={t}
                             onClick={() => updateLog({ gym_type: t })}
                             className={clsx(
-                              "px-4 py-2 border-[1.5px] rounded-lg font-body text-[12px] font-bold tracking-wider",
-                              todayLog.gym_type === t ? "bg-[#1A1A2E] text-white border-[#1A1A2E]" : "bg-white text-[#9A9590] border-[#E5E0D8] hover:border-[#1A1A2E]"
+                              "px-3 py-1.5 rounded-lg text-[9px] font-bold",
+                              "font-['Space_Mono'] uppercase tracking-wider",
+                              "transition-all",
+                              todayLog.gym_type === t
+                                ? "bg-[#1A1A2E] text-white"
+                                : "bg-[#F5F4F0] text-[#9A9590]"
                             )}
-                           >
-                             {t}
-                           </button>
-                         ))}
-                       </div>
-
-                       {todayLog.gym_type && workoutPlans[todayLog.gym_type] && (() => {
-                          const plan = workoutPlans[todayLog.gym_type]
-                          return (
-                            <motion.div
-                              initial={{ opacity: 0, y: 10 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              className="mt-4 rounded-xl overflow-hidden border border-[#E5E0D8]"
-                            >
-                              {/* Header */}
-                              <div className="p-4 flex items-center justify-between"
-                                style={{ backgroundColor: plan.color }}>
-                                <div>
-                                  <p className="text-[10px] font-bold text-white/60 
-                                    font-['Space_Mono'] uppercase tracking-widest mb-0.5">
-                                    Today's Training
-                                  </p>
-                                  <p className="text-sm font-bold text-white font-['Inter']">
-                                    {plan.focus}
-                                  </p>
-                                </div>
-                                <span className="text-xs font-bold text-white/80 
-                                  font-['Space_Mono'] uppercase">
-                                  {plan.exercises.length} exercises
-                                </span>
-                              </div>
-
-                              {/* Warmup */}
-                              {plan.warmup && (
-                                <div className="px-4 py-3 bg-amber-50 border-b border-[#E5E0D8]
-                                  flex items-center gap-2">
-                                  <span className="text-base">🔥</span>
-                                  <div>
-                                    <p className="text-[9px] font-bold text-amber-700 
-                                      font-['Space_Mono'] uppercase tracking-wider">Warmup</p>
-                                    <p className="text-xs text-amber-800 font-['Inter']">
-                                      {plan.warmup}
-                                    </p>
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* Exercise list */}
-                              <div className="bg-white">
-                                {plan.exercises.map((ex, i) => (
-                                  <ExerciseItem key={i} ex={ex} />
-                                ))}
-                              </div>
-
-                              {/* Cooldown */}
-                              {plan.cooldown && (
-                                <div className="px-4 py-3 bg-blue-50 flex items-center gap-2">
-                                  <span className="text-base">🧊</span>
-                                  <div>
-                                    <p className="text-[9px] font-bold text-blue-700 
-                                      font-['Space_Mono'] uppercase tracking-wider">
-                                      Cooldown
-                                    </p>
-                                    <p className="text-xs text-blue-800 font-['Inter']">
-                                      {plan.cooldown}
-                                    </p>
-                                  </div>
-                                </div>
-                              )}
-                            </motion.div>
-                          )
-                        })()}
-                     </div>
-                   )}
-
-                   <div className="pt-6 border-t border-[#F5F4F0] space-y-3">
-                      <div className="flex justify-between items-center text-[11px] font-bold uppercase tracking-tight">
-                        <span className="text-[#3D3830]">Phase 1: Routine Lock</span>
-                        <span className="text-[#9A9590]">{gymStreak}/30 gym days</span>
+                          >
+                            {t}
+                          </button>
+                        ))}
                       </div>
-                      <ProgressBar value={(gymStreak/30)*100} color="#E07B39" height="6px" />
-                   </div>
-                 </Card>
+                    </div>
+                  )}
+                </div>
+
+                 {todayLog.gym_done && todayLog.gym_type && workoutPlans[todayLog.gym_type] && (() => {
+                    const plan = workoutPlans[todayLog.gym_type]
+                    return (
+                      <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="mt-4 rounded-xl overflow-hidden border border-[#E5E0D8]"
+                      >
+                        {/* Header */}
+                        <div className="p-4 flex items-center justify-between"
+                          style={{ backgroundColor: plan.color }}>
+                          <div>
+                            <p className="text-[10px] font-bold text-white/60 
+                              font-['Space_Mono'] uppercase tracking-widest mb-0.5">
+                              Today's Training
+                            </p>
+                            <p className="text-sm font-bold text-white font-['Inter']">
+                              {plan.focus}
+                            </p>
+                          </div>
+                          <span className="text-xs font-bold text-white/80 
+                            font-['Space_Mono'] uppercase">
+                            {plan.exercises.length} exercises
+                          </span>
+                        </div>
+
+                        {/* Warmup */}
+                        {plan.warmup && (
+                          <div className="px-4 py-3 bg-amber-50 border-b border-[#E5E0D8]
+                            flex items-center gap-2">
+                            <span className="text-base">🔥</span>
+                            <div>
+                              <p className="text-[9px] font-bold text-amber-700 
+                                font-['Space_Mono'] uppercase tracking-wider">Warmup</p>
+                              <p className="text-xs text-amber-800 font-['Inter']">
+                                {plan.warmup}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Exercise list */}
+                        <div className="bg-white">
+                          {plan.exercises.map((ex, i) => (
+                            <ExerciseItem key={i} ex={ex} />
+                          ))}
+                        </div>
+
+                        {/* Cooldown */}
+                        {plan.cooldown && (
+                          <div className="px-4 py-3 bg-blue-50 flex items-center gap-2">
+                            <span className="text-base">🧊</span>
+                            <div>
+                              <p className="text-[9px] font-bold text-blue-700 
+                                font-['Space_Mono'] uppercase tracking-wider">
+                                Cooldown
+                              </p>
+                              <p className="text-xs text-blue-800 font-['Inter']">
+                                {plan.cooldown}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </motion.div>
+                    )
+                  })()}
               </section>
 
               {/* SECTION 2 — NUTRITION */}
               <section className="space-y-4">
-                 <h3 className="font-body text-[13px] font-bold text-[#9A9590] uppercase tracking-widest px-1">NUTRITION</h3>
-                 <Card className="p-8 border-l-[4px] border-l-[#1A6B4A] bg-white space-y-6">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[10px] font-bold text-[#9A9590]
+                    font-['Space_Mono'] uppercase tracking-widest">
+                    NUTRITION & FUEL
+                  </p>
+                  <span className="text-[9px] font-bold font-['Space_Mono']
+                    uppercase tracking-wider px-2.5 py-1 rounded-lg"
+                    style={{ 
+                      backgroundColor: '#1A6B4A15',
+                      color: '#1A6B4A'
+                    }}>
+                    {todayLog.protein_hit ? '🔥 Protein Target Reached' : '⚖️ Tracking Macros'}
+                  </span>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+                  {/* Habit toggles */}
+                  <div className="space-y-4 mb-4">
                     <HabitRow 
                       icon="🍽️" 
                       label="Meal 1 done" 
@@ -929,7 +1239,7 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
                     />
                     <HabitRow 
                       icon="💪" 
-                      label="Protein hit today" 
+                      label="Protein hit" 
                       sub="Eggs / Paneer / Soya / Dal"
                       value={todayLog.protein_hit} 
                       onChange={(v) => handleToggle('protein_hit', v, 10, 3)} 
@@ -937,298 +1247,350 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
                     />
                     <HabitRow 
                       icon="🚫" 
-                      label="No junk before 6PM" 
+                      label="No junk < 6PM" 
                       value={todayLog.no_junk_before_6pm} 
                       onChange={(v) => handleToggle('no_junk_before_6pm', v, 10, 3)} 
                       color="#1A6B4A"
                     />
-
-                    {todayLog.meal_1_done && todayLog.meal_2_done && todayLog.protein_hit && todayLog.no_junk_before_6pm && (
-                      <div className="p-4 bg-[#E8F5EF] rounded-xl border border-[#1A6B4A]/10 text-center">
-                        <p className="font-display text-[14px] font-extrabold text-[#1A6B4A] uppercase tracking-widest">🥗 CLEAN NUTRITION DAY</p>
-                      </div>
-                    )}
-
-                    <div className="pt-4 border-t border-[#F5F4F0]">
-                      <p className="text-[10px] font-bold text-[#9A9590] font-['Space_Mono']
-                        uppercase tracking-widest mb-3">
-                        Vegetarian Protein Guide (Your Sources)
+                  </div>
+                  
+                  {/* Protein target — compact strip below habits */}
+                  <div className="border-t border-[#F5F4F0] pt-4 
+                    flex items-center justify-between">
+                    <div>
+                      <p className="text-[9px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest mb-0.5">
+                        Daily Target
                       </p>
-                      <div className="grid grid-cols-2 gap-2">
-                        {[
-                          { food: 'Whole eggs', protein: '6g per egg', 
-                            note: 'Best bioavailability. Eat 4-6/day' },
-                          { food: 'Paneer (100g)', protein: '18g',
-                            note: 'Low fat paneer preferred. Daily staple' },
-                          { food: 'Greek Yogurt (200g)', protein: '20g',
-                            note: 'Epigamia or Nestle. High protein, easy' },
-                          { food: 'Soya chunks (50g dry)', protein: '25g',
-                            note: 'Cheapest protein. Add to sabzi or curry' },
-                          { food: 'Dal (1 bowl)', protein: '9g',
-                            note: 'Moong > masoor > toor for protein' },
-                          { food: 'Whey protein (1 scoop)', protein: '24g',
-                            note: 'Post workout. MuscleBlaze is solid' }
-                        ].map((item, i) => (
-                          <div key={i} className="bg-[#F5F4F0] rounded-xl p-3">
-                            <div className="flex items-center justify-between mb-1">
-                              <p className="text-xs font-bold text-[#1A1A2E] font-['Inter']">
-                                {item.food}
-                              </p>
-                              <span className="text-[10px] font-bold text-[#1A6B4A]
-                                font-['Space_Mono']">
-                                {item.protein}
-                              </span>
-                            </div>
-                            <p className="text-[10px] text-[#9A9590] font-['Inter']">
-                              {item.note}
-                            </p>
-                          </div>
-                        ))}
-                      </div>
-                      
-                      {/* Daily protein target calculator */}
-                      <div className="mt-3 bg-[#1A1A2E] rounded-xl p-4 text-white">
-                        <p className="text-[10px] font-bold text-white/40 font-['Space_Mono']
-                          uppercase tracking-widest mb-2">
-                          Your Daily Target
-                        </p>
-                        <p className="text-2xl font-bold font-['Space_Mono'] text-[#E07B39]">
-                          ~126-140g protein/day
-                        </p>
-                        <p className="text-[10px] text-white/50 font-['Inter'] mt-1">
-                          Based on 70kg bodyweight × 1.8-2g. Update when you log measurements.
-                        </p>
-                        <div className="mt-3 pt-3 border-t border-white/10">
-                          <p className="text-[10px] text-white/60 font-['Inter']">
-                            Sample day: 4 eggs (24g) + paneer sabzi (18g) + dal (9g) 
-                            + soya chunks (25g) + whey post-workout (24g) + Greek yogurt (20g)
-                            = <strong className="text-white">120g</strong> ✓
-                          </p>
-                        </div>
-                      </div>
+                      <p className="text-sm font-bold text-[#E07B39] 
+                        font-['Space_Mono']">
+                        126g - 140g protein
+                      </p>
                     </div>
-                 </Card>
+                    <div className="flex items-center gap-1.5 
+                      bg-[#1A6B4A]/10 rounded-lg px-3 py-1.5">
+                      <CheckCircle2 size={11} className="text-[#1A6B4A]"/>
+                      <p className="text-[9px] font-bold text-[#1A6B4A]
+                        font-['Space_Mono'] uppercase tracking-wider">
+                        Veg Protocol
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </section>
 
               {/* SECTION 3 — SLEEP */}
               <section className="space-y-4">
-                <h3 className="font-body text-[13px] font-bold text-[#9A9590] uppercase tracking-widest px-1">SLEEP</h3>
-                <Card className="p-8 border-l-[4px] border-l-[#1A1A2E] bg-white">
-                  <div className="grid grid-cols-2 gap-8 mb-8">
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-[10px] font-bold text-[#9A9590] uppercase mb-2">SLEPT AT</p>
-                        <input 
-                          type="time" 
-                          value={todayLog.sleep_time || ''}
-                          onChange={(e) => handleTimeChange('sleep_time', e.target.value)}
-                          className="font-mono text-[28px] font-bold text-[#1A1A2E] bg-transparent border-none p-0 focus:ring-0 w-full"
-                        />
-                      </div>
-                      <label className="flex items-center gap-3 cursor-pointer">
-                        <div className={clsx(
-                          "w-8 h-4 rounded-full relative transition-colors",
-                          todayLog.slept_by_midnight ? "bg-[#1A6B4A]" : "bg-[#E5E0D8]"
-                        )}>
-                          <div className={clsx("absolute top-1 w-2 h-2 rounded-full bg-white transition-all", todayLog.slept_by_midnight ? "right-1" : "left-1")} />
-                        </div>
-                        <span className="text-[12px] font-bold text-[#3D3830]">By midnight? {todayLog.slept_by_midnight && <span className="text-[#1A6B4A]">+10 XP</span>}</span>
-                      </label>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[10px] font-bold text-[#9A9590]
+                    font-['Space_Mono'] uppercase tracking-widest">
+                    RECOVERY & SLEEP
+                  </p>
+                  <span className="text-[9px] font-bold font-['Space_Mono']
+                    uppercase tracking-wider px-2.5 py-1 rounded-lg"
+                    style={{ 
+                      backgroundColor: '#1A1A2E15',
+                      color: '#1A1A2E'
+                    }}>
+                    {hoursSlept} hours slept
+                  </span>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+                  {/* Time inputs row */}
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <p className="text-[9px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest mb-2">
+                        Slept At
+                      </p>
+                      <input
+                        type="time"
+                        value={todayLog.sleep_time || ''}
+                        onChange={(e) => handleTimeChange('sleep_time', e.target.value)}
+                        className="w-full font-['Space_Mono'] text-2xl font-bold 
+                          text-[#1A1A2E] bg-[#F5F4F0] rounded-xl px-4 py-3
+                          border border-transparent focus:border-[#1A1A2E]
+                          focus:outline-none"
+                      />
                     </div>
-                    <div className="space-y-4">
-                      <div>
-                        <p className="text-[10px] font-bold text-[#9A9590] uppercase mb-2">WOKE AT</p>
-                        <input 
-                          type="time" 
-                          value={todayLog.wake_time || ''}
-                          onChange={(e) => handleTimeChange('wake_time', e.target.value)}
-                          className="font-mono text-[28px] font-bold text-[#1A1A2E] bg-transparent border-none p-0 focus:ring-0 w-full"
-                        />
-                      </div>
-                       <label className="flex items-center gap-3 cursor-pointer">
-                        <div className={clsx(
-                          "w-8 h-4 rounded-full relative transition-colors",
-                          todayLog.woke_by_630 ? "bg-[#1A6B4A]" : "bg-[#E5E0D8]"
-                        )}>
-                          <div className={clsx("absolute top-1 w-2 h-2 rounded-full bg-white transition-all", todayLog.woke_by_630 ? "right-1" : "left-1")} />
-                        </div>
-                        <span className="text-[12px] font-bold text-[#3D3830]">By 6:30 AM? {todayLog.woke_by_630 && <span className="text-[#1A6B4A]">+10 XP</span>}</span>
-                      </label>
+                    <div>
+                      <p className="text-[9px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest mb-2">
+                        Woke At
+                      </p>
+                      <input
+                        type="time"
+                        value={todayLog.wake_time || ''}
+                        onChange={(e) => handleTimeChange('wake_time', e.target.value)}
+                        className="w-full font-['Space_Mono'] text-2xl font-bold 
+                          text-[#1A1A2E] bg-[#F5F4F0] rounded-xl px-4 py-3
+                          border border-transparent focus:border-[#1A1A2E]
+                          focus:outline-none"
+                      />
                     </div>
                   </div>
 
-                  <div className="text-center pt-8 border-t border-[#F5F4F0]">
-                    <p className="text-[10px] font-bold text-[#9A9590] uppercase mb-1">HOURS SLEPT</p>
-                    <div className="flex flex-col items-center">
-                       <h4 className={clsx(
-                         "font-display text-[48px] font-extrabold leading-none transition-colors",
-                         hoursSlept < 6 ? "text-[#C0392B]" : hoursSlept < 7 ? "text-[#E07B39]" : "text-[#1A6B4A]"
-                       )}>
-                        {hoursSlept}
-                       </h4>
-                       <p className={clsx(
-                         "text-[10px] font-black uppercase mt-2",
-                         hoursSlept < 6 ? "text-[#C0392B]" : hoursSlept < 7 ? "text-[#E07B39]" : "text-[#1A6B4A]"
-                       )}>
-                        {hoursSlept < 6 ? '⚠️ SLEEP MORE' : hoursSlept < 7 ? 'OKAY' : hoursSlept < 8 ? 'GOOD' : 'PERFECT'}
-                       </p>
+                  {/* Hours + correlation strip */}
+                  <div className="flex items-center justify-between 
+                    bg-[#F5F4F0] rounded-xl px-4 py-3 mb-4">
+                    <div className="flex items-center gap-2">
+                      <Moon size={14} className="text-[#1A1A2E]"/>
+                      <p className="text-sm font-bold text-[#1A1A2E] 
+                        font-['Space_Mono']">
+                        {hoursSlept}h sleep
+                      </p>
                     </div>
+                    <span className="text-[9px] font-bold font-['Space_Mono']
+                      uppercase tracking-wider px-2.5 py-1 rounded-lg"
+                      style={{
+                        backgroundColor: hoursSlept < 6 
+                          ? '#C0392B15' 
+                          : hoursSlept < 7 
+                            ? '#E07B3915' 
+                            : '#1A6B4A15',
+                        color: hoursSlept < 6 
+                          ? '#C0392B' 
+                          : hoursSlept < 7 
+                            ? '#E07B39' 
+                            : '#1A6B4A'
+                      }}>
+                      {hoursSlept < 6 
+                        ? 'Insufficient' 
+                        : hoursSlept < 7 
+                          ? 'Average' 
+                          : 'Optimal'}
+                    </span>
                   </div>
-                </Card>
+
+                  {/* Sleep habit toggles */}
+                  <div className="space-y-4 mb-4">
+                    <HabitRow
+                      label="Slept before midnight?"
+                      value={todayLog.slept_by_midnight}
+                      onChange={(v) => handleToggle('slept_by_midnight', v, 10, 2)}
+                      color="#1A1A2E"
+                    />
+                    <HabitRow
+                      label="Woke by 6:30 AM?"
+                      value={todayLog.woke_by_630}
+                      onChange={(v) => handleToggle('woke_by_630', v, 10, 2)}
+                      color="#1A1A2E"
+                    />
+                  </div>
+
+                  {/* Correlation insight — only if data exists */}
+                  {sleepQuestCorrelation && (
+                    <div className="border-t border-[#F5F4F0] pt-3 
+                      flex items-start gap-2">
+                      <TrendingUp size={12} className="text-[#1A6B4A] 
+                        shrink-0 mt-0.5"/>
+                      <p className="text-[10px] text-[#9A9590] font-['Inter']
+                        leading-relaxed">
+                        On 7h+ sleep days your score is{' '}
+                        <span className="font-bold text-[#1A6B4A]">
+                          {sleepQuestCorrelation.diff}% higher
+                        </span>
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Sleep chart — only if data */}
+                  {sleepDetailsChartData.length > 0 && (
+                    <div className="mt-3 h-16">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={sleepDetailsChartData.slice(-7)}>
+                          <Line type="monotone" dataKey="hours" 
+                            stroke="#1A1A2E" strokeWidth={2} dot={false}/>
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  )}
+                </div>
               </section>
 
-              {/* SECTION 4 — HYGIENE */}
+              {/* SECTION 4 — HYGIENE & PROTOCOLS */}
               <section className="space-y-4">
-                 <div className="px-1">
-                   <h3 className="font-body text-[13px] font-bold text-[#9A9590] uppercase tracking-widest">HYGIENE & ENVIRONMENT</h3>
-                   <p className="text-[12px] text-[#9A9590] italic mt-1 font-medium">Your environment is your identity</p>
-                 </div>
-                 <Card className="p-8 border-l-[4px] border-l-[#7C3AED] bg-white space-y-5">
-                    {[
-                      { id: 'bath_done', icon: '🚿', label: 'Bath done' },
-                      { id: 'teeth_brushed', icon: '🪥', label: 'Teeth brushed' },
-                      { id: 'bed_made', icon: '🛏️', label: 'Bed made', sub: 'Takes 2 minutes. Sets the tone.' },
-                      { id: 'skincare_am', icon: '🌅', label: 'Skincare AM', sub: 'Moisturizer + SPF. 30 seconds.' },
-                      { id: 'skincare_pm', icon: '🌙', label: 'Skincare PM', sub: 'Cleanser + moisturizer. 2 minutes.' },
-                      { id: 'study_table_organised', icon: '📚', label: 'Study table organised', sub: 'Clean desk = clear mind' },
-                    ].map(h => (
-                       <HabitRow 
-                        key={h.id}
-                        icon={h.icon}
-                        label={h.label}
-                        sub={h.sub}
-                        value={todayLog[h.id]}
-                        onChange={(v) => handleToggle(h.id, v, 5, 1)}
-                        color="#7C3AED"
-                       />
-                    ))}
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[10px] font-bold text-[#9A9590]
+                    font-['Space_Mono'] uppercase tracking-widest">
+                    HYGIENE & PROTOCOLS
+                  </p>
+                  <span className="text-[9px] font-bold font-['Space_Mono']
+                    uppercase tracking-wider px-2.5 py-1 rounded-lg"
+                    style={{ 
+                      backgroundColor: '#7C3AED15',
+                      color: '#7C3AED'
+                    }}>
+                    Checks complete
+                  </span>
+                </div>
 
-                    {['bath_done', 'teeth_brushed', 'bed_made', 'skincare_am', 'skincare_pm', 'study_table_organised'].every(f => todayLog[f]) && (
-                       <div className="p-4 bg-[#F3E8FF] rounded-xl border border-[#7C3AED]/10 text-center">
-                        <p className="font-display text-[14px] font-extrabold text-[#7C3AED] uppercase tracking-widest">✨ ENVIRONMENT LOCKED</p>
+                <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* Morning */}
+                    <div>
+                      <p className="text-[9px] font-bold text-[#E07B39]
+                        font-['Space_Mono'] uppercase tracking-widest mb-3">
+                        Morning Protocol
+                      </p>
+                      <div className="space-y-4">
+                        <HabitRow 
+                          icon={<Bed size={16} className="text-[#1A6B4A]"/>}
+                          label="Bed made"
+                          sub="2 min. Sets the tone."
+                          value={todayLog.bed_made}
+                          onChange={(v) => handleToggle('bed_made', v, 5, 1)}
+                          color="#1A6B4A"
+                        />
+                        <HabitRow
+                          icon={<Bath size={16} className="text-[#1A6B4A]"/>}
+                          label="Bath done"
+                          value={todayLog.bath_done}
+                          onChange={(v) => handleToggle('bath_done', v, 5, 1)}
+                          color="#1A6B4A"
+                        />
+                        <HabitRow
+                          icon={<Sun size={16} className="text-[#1A6B4A]"/>}
+                          label="Skincare AM"
+                          sub="Moisturizer + SPF"
+                          value={todayLog.skincare_am}
+                          onChange={(v) => handleToggle('skincare_am', v, 5, 1)}
+                          color="#1A6B4A"
+                        />
                       </div>
-                    )}
-                 </Card>
+                    </div>
+
+                    {/* Night */}
+                    <div>
+                      <p className="text-[9px] font-bold text-[#1A1A2E]
+                        font-['Space_Mono'] uppercase tracking-widest mb-3">
+                        Night Protocol
+                      </p>
+                      <div className="space-y-4">
+                        <HabitRow
+                          icon={<Brush size={16} className="text-[#1A1A2E]"/>}
+                          label="Teeth brushed"
+                          value={todayLog.teeth_brushed}
+                          onChange={(v) => handleToggle('teeth_brushed', v, 5, 1)}
+                          color="#1A1A2E"
+                        />
+                        <HabitRow
+                          icon={<Moon size={16} className="text-[#1A1A2E]"/>}
+                          label="Skincare PM"
+                          sub="Cleanser + moisturizer"
+                          value={todayLog.skincare_pm}
+                          onChange={(v) => handleToggle('skincare_pm', v, 5, 1)}
+                          color="#1A1A2E"
+                        />
+                        <HabitRow
+                          icon={<Book size={16} className="text-[#1A1A2E]"/>}
+                          label="Study table clean"
+                          sub="Clean desk = clear mind"
+                          value={todayLog.study_table_organised}
+                          onChange={(v) => handleToggle('study_table_organised', v, 5, 1)}
+                          color="#1A1A2E"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </section>
 
-              {/* HEATMAP */}
-              <section className="space-y-6 pt-10">
-                 <h2 className="font-display text-[20px] font-extrabold text-[#1A1A2E] uppercase tracking-tight">THIS MONTH</h2>
-                 <Card className="p-8 bg-white border border-[#E5E0D8]">
-                    <div className="grid grid-cols-7 lg:grid-cols-10 gap-2">
-                       {/* Pad and show calendar cells */}
-                       {Array.from({ length: 30 }).map((_, i) => {
-                         const date = new Date(2026, 3, i + 1); // Mock mapping
-                         const dateStr = format(date, 'yyyy-MM-dd');
-                         const log = history.find(l => l.log_date === dateStr);
-                         return (
-                            <div 
-                              key={i} 
-                              className={clsx(
-                                "aspect-square rounded-[6px] transition-all relative group",
-                                !log ? "bg-[#F0EDE8]" : 
-                                 log.day_score === 100 ? "bg-[#1A6B4A]" :
-                                 log.day_score >= 80 ? "bg-[#E07B39]" :
-                                 log.day_score >= 50 ? "bg-[#FFC49B]" : "bg-[#FFE4CC]"
-                              )}
-                            >
-                              <div className="absolute inset-0 flex items-center justify-center opacity-10 font-bold text-xs">{i+1}</div>
-                              {log && (
-                                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-50">
-                                   <div className="bg-[#1A1A2E] text-white text-[10px] px-3 py-2 rounded-lg whitespace-nowrap shadow-xl">
-                                     {format(date, 'MMM d')} · Score {log.day_score}% · ₹{log.rupees_earned}
-                                   </div>
-                                   <div className="w-2 h-2 bg-[#1A1A2E] rotate-45 mx-auto -mt-1" />
-                                 </div>
-                              )}
-                            </div>
-                         );
-                       })}
+              {/* HEATMAP — monthly performance */}
+              <section className="space-y-4 pt-4">
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-[10px] font-bold text-[#9A9590]
+                    font-['Space_Mono'] uppercase tracking-widest">
+                    MONTHLY PERFORMANCE
+                  </p>
+                  <div className="flex gap-1.5">
+                    {['#1A6B4A', '#E07B39', '#FFC49B', '#F0EDE8'].map((c, i) => (
+                      <div key={i} className="w-2 h-2 rounded-sm" 
+                        style={{ backgroundColor: c }} />
+                    ))}
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-2xl border border-[#E5E0D8] p-6">
+                  {/* The grid */}
+                  <div className="grid grid-cols-7 lg:grid-cols-10 gap-3 mb-8">
+                    {Array.from({ length: 30 }).map((_, i) => {
+                      const date = new Date();
+                      date.setDate(date.getDate() - (29 - i));
+                      const dateStr = date.toISOString().split('T')[0];
+                      const log = history.find(l => l.log_date === dateStr);
+                      return (
+                        <div key={i} className={clsx(
+                          "aspect-square rounded-lg transition-all relative group",
+                          !log ? "bg-[#F0EDE8]" : 
+                           log.day_score === 100 ? "bg-[#1A6B4A]" :
+                           log.day_score >= 80 ? "bg-[#E07B39]" :
+                           log.day_score >= 50 ? "bg-[#FFC49B]" : "bg-[#FFE4CC]"
+                        )}>
+                          {log && (
+                             <div className="absolute bottom-full left-1/2 
+                               -translate-x-1/2 mb-2 hidden group-hover:block z-50">
+                               <div className="bg-[#1A1A2E] text-white text-[10px] 
+                                 px-3 py-2 rounded-lg whitespace-nowrap shadow-xl">
+                                 {format(date, 'MMM d')} · {log.day_score}%
+                               </div>
+                             </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Stats strip */}
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 
+                    pt-6 border-t border-[#F5F4F0]">
+                    <div className="text-center">
+                      <p className="text-[9px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest mb-1">
+                        Perfect Days
+                      </p>
+                      <p className="text-xl font-bold font-['Space_Mono'] 
+                        text-[#1A6B4A]">
+                        {history.filter(l => l.day_score === 100).length}
+                      </p>
                     </div>
-                    <div className="mt-8 pt-8 border-t border-[#F5F4F0] grid grid-cols-2 lg:grid-cols-4 gap-4">
-                       <div className="text-center">
-                         <p className="text-[10px] font-bold text-[#9A9590] uppercase tracking-widest mb-1">Perfect Days</p>
-                         <p className="font-display text-xl font-black text-[#1A6B4A]">{history.filter(l => l.day_score === 100).length}</p>
-                       </div>
-                       <div className="text-center">
-                         <p className="text-[10px] font-bold text-[#9A9590] uppercase tracking-widest mb-1">Gym Days</p>
-                         <p className="font-display text-xl font-black text-[#E07B39]">{history.filter(l => l.gym_done).length}/30</p>
-                       </div>
-                       <div className="text-center">
-                         <p className="text-[10px] font-bold text-[#9A9590] uppercase tracking-widest mb-1">Avg Sleep</p>
-                         <p className="font-display text-xl font-black text-[#1A1A2E]">7.2 hrs</p>
-                       </div>
-                       <div className="text-center">
-                         <p className="text-[10px] font-bold text-[#9A9590] uppercase tracking-widest mb-1">Hygiene Streak</p>
-                         <p className="font-display text-xl font-black text-[#7C3AED]">12 days</p>
-                       </div>
+                    <div className="text-center">
+                      <p className="text-[9px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest mb-1">
+                        Gym Streak
+                      </p>
+                      <p className="text-xl font-bold font-['Space_Mono'] 
+                        text-[#E07B39]">
+                        {history.filter(l => l.gym_done).length}/30
+                      </p>
                     </div>
-                 </Card>
+                    <div className="text-center">
+                      <p className="text-[9px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest mb-1">
+                        Avg Sleep
+                      </p>
+                      <p className="text-xl font-bold font-['Space_Mono'] 
+                        text-[#1A1A2E]">
+                        {history.length > 0 ? (history.reduce((s,l) => s + (l.sleep_hours || 0), 0) / history.length).toFixed(1) : 0}h
+                      </p>
+                    </div>
+                    <div className="text-center">
+                      <p className="text-[9px] font-bold text-[#9A9590]
+                        font-['Space_Mono'] uppercase tracking-widest mb-1">
+                        Earnings
+                      </p>
+                      <p className="text-xl font-bold font-['Space_Mono'] 
+                        text-[#7C3AED]">
+                        ₹{history.reduce((s,l) => s + (l.rupees_earned || 0), 0)}
+                      </p>
+                    </div>
+                  </div>
+                </div>
               </section>
             </div>
           )}
-        </div>
-
-        {/* SIDEBAR — TODAY'S LOOT */}
-        {activeSection === 'daily' && (
-          <div className="hidden lg:block w-[280px] sticky top-8 order-2">
-             <Card className="p-6 bg-[#1A1A2E] text-white border-none shadow-2xl">
-                <div className="flex items-center gap-2 mb-6">
-                  <TrendingUp className="w-5 h-5 text-[#E8F5EF]" />
-                  <h3 className="font-display text-[16px] font-extrabold uppercase tracking-widest">TODAY'S LOOT</h3>
-                </div>
-
-                <div className="space-y-3 mb-6 min-h-[200px] overflow-y-auto max-h-[400px] pr-2 scrollbar-thin scrollbar-thumb-white/10">
-                  <AnimatePresence>
-                    {lootList(todayLog).map((item, i) => (
-                      <motion.div 
-                        key={`${item.label}-${i}`}
-                        initial={{ opacity: 0, x: 20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, scale: 0.9 }}
-                        className="flex items-start gap-3 p-3 bg-white/5 rounded-xl border border-white/5"
-                      >
-                        <CheckCircle2 className="w-4 h-4 text-[#1A6B4A] mt-0.5" />
-                        <div>
-                          <p className="text-[11px] font-bold opacity-80 uppercase leading-none">{item.label}</p>
-                          <div className="flex gap-2 mt-1.5 font-mono text-[9px] font-black">
-                            <span className="text-[#E8F5EF]">+{item.xp} XP</span>
-                            <span className="text-[#1A6B4A]">+{item.rupee} ₹</span>
-                          </div>
-                        </div>
-                      </motion.div>
-                    ))}
-                  </AnimatePresence>
-                </div>
-
-                <div className="pt-6 border-t border-white/10 space-y-4">
-                   <div className="flex justify-between items-center bg-white/5 p-3 rounded-lg">
-                     <span className="text-[11px] font-bold opacity-60 uppercase">TOTAL</span>
-                     <div className="text-right">
-                       <p className="font-mono text-xs font-black text-[#7C3AED] tracking-widest leading-none">+{todayLog.total_checks * 10} XP</p>
-                       <p className="font-mono text-xs font-black text-[#1A6B4A] tracking-widest mt-1 leading-none">+₹{todayLog.total_checks * 4}</p>
-                     </div>
-                   </div>
-                   
-                   <div className="space-y-2">
-                     <div className="flex justify-between text-[10px] font-bold uppercase tracking-tight">
-                       <span>Score</span>
-                       <span>{todayLog.day_score}%</span>
-                     </div>
-                     <div className="h-1 bg-white/10 rounded-full overflow-hidden">
-                       <motion.div 
-                        initial={{ width: 0 }}
-                        animate={{ width: `${todayLog.day_score}%` }}
-                        className="h-full bg-[#1A6B4A]" 
-                       />
-                     </div>
-                   </div>
-                </div>
-             </Card>
-          </div>
-        )}
       </div>
-
       {/* NEW TABS CONTENT */}
       {activeSection === 'physique' && (
         <div className="flex flex-col gap-6">
@@ -1332,6 +1694,43 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
               </p>
             </div>
           </div>
+
+          {/* Pre-Gym Readiness Trend */}
+          {readinessTrend.length >= 3 && (
+            <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+              <p className="text-[10px] font-bold text-[#9A9590]
+                font-['Space_Mono'] uppercase tracking-widest mb-3">
+                Pre-Gym Readiness — Last 7 Days
+              </p>
+              <div className="flex items-end gap-2 h-16">
+                {readinessTrend.map((session, i) => {
+                  const score = parseInt(session.ai_response) || 0
+                  return (
+                    <div key={i} className="flex-1 flex flex-col 
+                      items-center gap-1">
+                      <div
+                        className="w-full rounded-t-lg transition-all"
+                        style={{
+                          height: `${score}%`,
+                          minHeight: '4px',
+                          backgroundColor: score >= 75 
+                            ? '#1A6B4A' 
+                            : score >= 50 
+                              ? '#E07B39' 
+                              : '#C0392B'
+                        }}
+                      />
+                      <p className="text-[7px] text-[#9A9590] 
+                        font-['Space_Mono']">
+                        {new Date(session.session_date)
+                          .toLocaleDateString('en-IN', { weekday: 'narrow' })}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Physique Progress Trend */}
           {physiqueChartData.length > 1 ? (
@@ -2247,6 +2646,40 @@ Give him a sharp, direct assessment. Suggest only VEGETARIAN protein sources (So
         onClose={() => setShowSubmitModal(false)} 
         score={modalData.score} 
         earnings={modalData.earnings}
+      />
+
+      <GymChecklist
+        isOpen={gymChecklistOpen}
+        onComplete={(data) => {
+          setGymReadinessScore(data.readinessScore)
+          setGymChecklistOpen(false)
+          updateLog({ gym_done: true })
+          
+          // Trigger Jarvis reactions manually
+          triggerJarvisToast({
+            type: 'success',
+            title: 'GYM SESSION',
+            xp: 25,
+            message: `Readiness: ${data.readinessScore}% — Logged. Recovery starts now.`,
+            duration: 3500
+          });
+          
+          // Save readiness score to ai_sessions
+          supabase.from('ai_sessions').insert({
+            type: 'gym_readiness',
+            session_date: getTodayIST(),
+            user_input: JSON.stringify(data.answers),
+            ai_response: data.readinessScore.toString(),
+            context_snapshot: JSON.stringify({ 
+              score: data.readinessScore,
+              totalScore: data.totalScore
+            })
+          }).catch(() => {})
+        }}
+        onSkip={() => {
+          setGymChecklistOpen(false)
+          updateLog({ gym_done: true })
+        }}
       />
     </div>
   );

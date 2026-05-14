@@ -10,8 +10,10 @@ import { format } from 'date-fns'
 import { clsx } from 'clsx'
 import {
   Volume2, VolumeX, Mic, Send, RefreshCcw,
-  Target, TrendingUp, Trash2, ArrowRight, Clock, CheckCircle2
+  Target, TrendingUp, Trash2, ArrowRight, Clock, CheckCircle2, Pencil,
+  Brain
 } from 'lucide-react'
+import { getMemoryCount } from '../lib/globalMemory'
 
 const AIPlanner = () => {
   // --- TOP-LEVEL STATE ---
@@ -24,14 +26,19 @@ const AIPlanner = () => {
   const [questsVisible, setQuestsVisible] = useState(false)
   const [rateLimitCooldown, setRateLimitCooldown] = useState(0) // seconds remaining
   const [addedQuests, setAddedQuests] = useState(new Set())
+  const [intentionInput, setIntentionInput] = useState('')
+  const [memoryCount, setMemoryCount] = useState(0)
   const messagesEndRef = useRef(null)
+
 
   // --- ZUSTAND STORE ---
   const {
     chatHistory, morningBrief, eveningReview, generatedQuests,
     isGenerating, voiceEnabled, isStreaming, streamingContent,
+    todayIntention, intentionSaved, currentMood,
     toggleVoice, clearChat, sendMessage,
-    generateMorningBrief, generateEveningReview, generateDailyQuests
+    generateMorningBrief, generateEveningReview, generateDailyQuests,
+    loadTodayIntention, saveIntention
   } = useJarvisStore()
 
   const { loadQuests } = useQuestStore()
@@ -52,7 +59,16 @@ const AIPlanner = () => {
       }
     }
     loadContext()
+    loadTodayIntention()
+    getMemoryCount().then(setMemoryCount)
   }, [])
+
+  // Update local intention input when store changes
+  useEffect(() => {
+    if (todayIntention) {
+      setIntentionInput(todayIntention)
+    }
+  }, [todayIntention])
 
   // --- useEffect 2: Auto-scroll chat ---
   useEffect(() => {
@@ -159,6 +175,18 @@ const AIPlanner = () => {
     'Focus mode — what to do next?'
   ]
 
+  const MOOD_DISPLAY = {
+    stressed: { emoji: '😮💨', label: 'Calm mode', 
+      color: '#1A6B4A' },
+    motivated: { emoji: '⚡', label: 'Energy mode', 
+      color: '#E07B39' },
+    frustrated: { emoji: '🎯', label: 'Fix mode', 
+      color: '#C0392B' },
+    reflective: { emoji: '🧠', label: 'Deep mode', 
+      color: '#7C3AED' },
+    neutral: null
+  }
+
   return (
     <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 font-['Inter'] text-[#1A1A2E]">
 
@@ -182,11 +210,19 @@ const AIPlanner = () => {
             {voiceEnabled ? 'VOICE ON' : 'VOICE OFF'}
           </button>
           <div className="flex items-center gap-2 text-sm text-[#9A9590] font-['Space_Mono'] font-bold">
-            <div className={clsx('w-2 h-2 rounded-full', contextLoading ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-500')}/>
             {contextLoading ? 'LOADING...' : 'READY'}
+          </div>
+          
+          {/* MEMORY INDICATOR */}
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white border border-[#E5E0D8] shadow-sm">
+            <Brain size={12} className="text-[#7C3AED]"/>
+            <span className="text-[10px] font-bold font-['Space_Mono'] text-[#1A1A2E]">
+              {memoryCount} MEMORIES
+            </span>
           </div>
         </div>
       </div>
+
 
       {/* TWO COLUMN LAYOUT */}
       <div className="flex flex-col lg:flex-row gap-6">
@@ -201,6 +237,59 @@ const AIPlanner = () => {
               <span className="text-xs text-[#9A9590] font-['Space_Mono']">{format(new Date(), 'HH:mm')}</span>
             </div>
             
+            {/* INTENTION SECTION */}
+            <div className="mb-4 text-left">
+              <p className="text-[10px] font-bold text-[#9A9590]
+                font-['Space_Mono'] uppercase tracking-widest mb-2">
+                Today's Intention
+              </p>
+              {intentionSaved ? (
+                <div className="bg-[#F5F4F0] rounded-xl p-3 
+                  border-l-4 border-[#E07B39] flex items-start 
+                  justify-between gap-2">
+                  <p className="text-sm text-[#1A1A2E] font-['Inter'] 
+                    leading-relaxed flex-1">
+                    {todayIntention}
+                  </p>
+                  <button
+                    onClick={() => useJarvisStore.setState({ intentionSaved: false })}
+                    className="text-[#9A9590] hover:text-[#1A1A2E] 
+                      transition-colors shrink-0 mt-0.5"
+                  >
+                    <Pencil size={12}/>
+                  </button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <input
+                    value={intentionInput}
+                    onChange={e => setIntentionInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && intentionInput.trim()) {
+                        saveIntention(intentionInput)
+                      }
+                    }}
+                    placeholder="What's your one focus for today?"
+                    className="flex-1 bg-[#F5F4F0] rounded-xl px-3 py-2
+                      text-sm text-[#1A1A2E] font-['Inter']
+                      placeholder-[#9A9590] border border-[#E5E0D8]
+                      focus:outline-none focus:border-[#E07B39]
+                      transition-colors"
+                  />
+                  <button
+                    onClick={() => {
+                      if (intentionInput.trim()) saveIntention(intentionInput)
+                    }}
+                    className="bg-[#E07B39] text-white px-3 py-2 
+                      rounded-xl text-xs font-bold font-['Space_Mono']
+                      uppercase tracking-wider"
+                  >
+                    Set
+                  </button>
+                </div>
+              )}
+            </div>
+
             {!morningBrief ? (
               <div className="text-center py-8">
                 <div className="text-8xl font-['Inter'] font-bold text-gray-100 mb-4 select-none">J</div>
@@ -393,6 +482,26 @@ const AIPlanner = () => {
               <div className="flex items-center gap-3">
                 <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"/>
                 <h2 className="text-xs font-['Space_Mono'] font-bold text-[#1A1A2E] tracking-widest uppercase">Talk to JARVIS</h2>
+                
+                {currentMood !== 'neutral' && MOOD_DISPLAY[currentMood] && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border ml-2"
+                    style={{ 
+                      backgroundColor: MOOD_DISPLAY[currentMood].color + '15',
+                      borderColor: MOOD_DISPLAY[currentMood].color + '30'
+                    }}
+                  >
+                    <span className="text-xs">
+                      {MOOD_DISPLAY[currentMood].emoji}
+                    </span>
+                    <p className="text-[9px] font-bold font-['Space_Mono'] uppercase tracking-wider"
+                      style={{ color: MOOD_DISPLAY[currentMood].color }}>
+                      {MOOD_DISPLAY[currentMood].label}
+                    </p>
+                  </motion.div>
+                )}
               </div>
               <button 
                 onClick={clearChat} 

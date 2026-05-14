@@ -2,11 +2,14 @@ import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
 import { awardXP } from '../lib/xpEngine';
 import { rewards } from '../lib/rewards';
+import { saveHealthMemory } from '../lib/globalMemory'
 
 export const useHealthStore = create((set, get) => ({
   todayLog: null,
   history: [],
   milestones: [],
+  sleepDetails: [],
+  sleepDetailsLoaded: false,
   loading: false,
   isLoading: false,
   lastLoaded: null,
@@ -20,6 +23,9 @@ export const useHealthStore = create((set, get) => ({
       const { data: log } = await supabase.from('health_logs').select('*').eq('log_date', today).maybeSingle();
       const { data: history } = await supabase.from('health_logs').select('*').order('log_date', { ascending: false }).limit(60);
       const { data: milestones } = await supabase.from('health_milestones').select('*').order('phase');
+
+      // Call additive load
+      await get().loadSleepDetails();
 
       set({ 
         todayLog: log || { 
@@ -50,6 +56,73 @@ export const useHealthStore = create((set, get) => ({
       console.error('Failed to load health data:', err);
       set({ loading: false, isLoading: false });
     }
+  },
+
+  loadSleepDetails: async () => {
+    const thirtyDaysAgo = new Date()
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30)
+    const fromDate = thirtyDaysAgo.toISOString().split('T')[0]
+
+    const { data } = await supabase
+      .from('ai_sessions')
+      .select('session_date, context_snapshot')
+      .eq('type', 'sleep_detail')
+      .gte('session_date', fromDate)
+      .order('session_date', { ascending: true })
+
+    const details = (data || []).map(row => {
+      try {
+        return { 
+          date: row.session_date,
+          ...JSON.parse(row.context_snapshot) 
+        }
+      } catch { return null }
+    }).filter(Boolean)
+
+    set({ sleepDetails: details, sleepDetailsLoaded: true })
+  },
+
+  logSleepDetail: async (bedTime, wakeTime) => {
+    if (!bedTime || !wakeTime) return
+    
+    // Calculate hours
+    const [bedH, bedM] = bedTime.split(':').map(Number)
+    const [wakeH, wakeM] = wakeTime.split(':').map(Number)
+    let hours = wakeH - bedH + (wakeM - bedM) / 60
+    if (hours < 0) hours += 24 // past midnight
+    hours = Math.round(hours * 10) / 10
+
+    const today = new Date().toISOString().split('T')[0] // Fallback if getTodayIST not in store
+    const detail = { bedTime, wakeTime, hours }
+
+    // Check existing
+    const { data: existing } = await supabase
+      .from('ai_sessions')
+      .select('id')
+      .eq('type', 'sleep_detail')
+      .eq('session_date', today)
+      .maybeSingle() // using maybeSingle for safety
+
+    if (existing) {
+      await supabase.from('ai_sessions')
+        .update({ context_snapshot: JSON.stringify(detail) })
+        .eq('id', existing.id)
+    } else {
+      await supabase.from('ai_sessions').insert({
+        type: 'sleep_detail',
+        session_date: today,
+        user_input: `${hours}h`,
+        ai_response: '',
+        context_snapshot: JSON.stringify(detail)
+      })
+    }
+
+    set(state => ({
+      sleepDetails: [
+        ...state.sleepDetails.filter(d => d.date !== today),
+        { date: today, ...detail }
+      ]
+    }))
   },
 
   updateLog: async (field, value) => {
@@ -111,6 +184,8 @@ export const useHealthStore = create((set, get) => ({
          await rewards.earnReward(5000, 'Perfect Health Bonus', 'health_bonus');
        }
        
+       saveHealthMemory(todayLog) // fire and forget
+
        return { success: true, score: todayLog.day_score, earnings };
     } catch (err) {
        console.error('Failed to submit day:', err);

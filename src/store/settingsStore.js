@@ -49,6 +49,18 @@ export const useSettingsStore = create((set, get) => ({
   loading: false,
   saving: false,
 
+  applyTheme: (themeName) => {
+    const theme = THEMES[themeName] || THEMES['LIGHT PROFESSIONAL'];
+    Object.entries(theme).forEach(([key, value]) => {
+      document.documentElement.style.setProperty(key, value);
+    });
+  },
+
+  applyFontSize: (size) => {
+    const sizes = { 'Small': '14px', 'Default': '16px', 'Large': '18px' };
+    document.documentElement.style.fontSize = sizes[size] || '16px';
+  },
+
   loadSettings: async () => {
     set({ loading: true });
     try {
@@ -114,11 +126,6 @@ export const useSettingsStore = create((set, get) => ({
     const { awardXP } = await import('../lib/xpEngine');
     await supabase.from('badges').update({ earned: true, earned_at: new Date().toISOString() }).eq('badge_key', 'funded_trader');
     await awardXP(1000, 'Prop Firm Passed');
-  },
-
-  applyFontSize: (size) => {
-    const sizes = { 'Small': '14px', 'Default': '16px', 'Large': '18px' };
-    document.documentElement.style.fontSize = sizes[size] || '16px';
   },
 
   resetData: async () => {

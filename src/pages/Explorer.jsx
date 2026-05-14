@@ -7,7 +7,7 @@ import {
   Brain, Globe, Zap, BookOpen, FlaskConical,
   Lightbulb, ChevronDown, ChevronUp, Plus,
   Check, RefreshCw, Sparkles, ArrowRight,
-  FileText, Archive, BarChart3, ExternalLink, Save, Cpu
+  FileText, Archive, BarChart3, ExternalLink, Save, Cpu, Trophy
 } from 'lucide-react'
 
 const domainConfig = {
@@ -31,13 +31,11 @@ const Explorer = () => {
   const inputRef = useRef(null)
 
   const {
-    weeklyTopic, dailyConcepts, books, papers,
-    currentTopicId, currentNotes, topicArchive,
-    brainDrops, readItems, knowledgeDepth,
-    isGenerating, isSavingNotes, lastGenerated,
-    loadSavedTopic, generateWeeklyTopic, addBrainDrop,
-    loadBrainDrops, markRead, saveNotes, exportToGoogleDocs,
-    loadArchive, loadKnowledgeDepth, viewArchivedTopic
+    weeklyTopic, dailyConcepts, books, papers, currentNotes, isGenerating, readItems, lastGenerated,
+    topicArchive, knowledgeDepth, topicConnections, isGeneratingConnections, brainDrops,
+    loadSavedTopic, loadBrainDrops, addBrainDrop, markRead, saveNotes, generateWeeklyTopic,
+    loadArchive, loadKnowledgeDepth, viewArchivedTopic,
+    activeQuiz, answerQuiz, dismissQuiz, generateConnections, conceptStreak
   } = useExplorerStore()
 
   useEffect(() => {
@@ -226,7 +224,7 @@ const Explorer = () => {
                             </div>
                             {!isRead && (
                               <button
-                                onClick={(e) => { e.stopPropagation(); markRead(concept.title) }}
+                                onClick={(e) => { e.stopPropagation(); markRead(concept) }}
                                 className="text-xs bg-[#1A6B4A] text-white px-3 py-1.5 rounded-lg font-bold font-['Space_Mono'] uppercase tracking-wider hover:opacity-90 flex items-center gap-1"
                               >
                                 <Check size={11} /> Mark Read
@@ -520,11 +518,60 @@ const Explorer = () => {
         </p>
       </div>
 
+      {topicArchive?.length >= 3 && (
+        <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 mb-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-[10px] font-bold text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest mb-0.5">
+                Cross-Topic Intelligence
+              </p>
+              <p className="text-sm font-bold text-[#1A1A2E] font-['Inter']">
+                Connection Mapper
+              </p>
+            </div>
+            <button
+              onClick={generateConnections}
+              disabled={isGeneratingConnections}
+              className="bg-[#1A1A2E] text-white px-3 py-1.5 rounded-lg text-[9px] font-bold font-['Space_Mono'] uppercase tracking-wider disabled:opacity-50"
+            >
+              {isGeneratingConnections ? 'Mapping...' : 'Find Links'}
+            </button>
+          </div>
+
+          {topicConnections && (
+            <div className="space-y-3">
+              {topicConnections.map((conn, i) => (
+                <div key={i} className="bg-[#F5F4F0] rounded-xl p-4 border-l-4 border-[#E07B39]">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[9px] font-bold text-[#E07B39] font-['Space_Mono'] uppercase tracking-wider bg-[#E07B39]/10 px-2 py-0.5 rounded-full">
+                      {conn.topic1}
+                    </span>
+                    <span className="text-[#9A9590] text-xs">×</span>
+                    <span className="text-[9px] font-bold text-[#1A6B4A] font-['Space_Mono'] uppercase tracking-wider bg-[#1A6B4A]/10 px-2 py-0.5 rounded-full">
+                      {conn.topic2}
+                    </span>
+                  </div>
+                  <p className="text-xs text-[#1A1A2E] font-['Inter'] leading-relaxed mb-1">
+                    {conn.connection}
+                  </p>
+                  <p className="text-[10px] text-[#9A9590] font-['Inter'] italic">
+                    {conn.insight}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {topicArchive.length === 0 && (
         <div className="text-center py-16">
           <Archive size={32} className="text-[#E5E0D8] mx-auto mb-3" />
-          <p className="text-sm text-[#9A9590] font-['Inter']">
-            No archived topics yet. Complete your first exploration.
+          <p className="text-sm font-bold text-[#1A1A2E] font-['Inter'] mb-1">
+            Archive Empty
+          </p>
+          <p className="text-xs text-[#9A9590] font-['Inter'] max-w-xs mx-auto">
+            Complete your first exploration to see it here.
           </p>
         </div>
       )}
@@ -717,14 +764,24 @@ const Explorer = () => {
             </p>
           )}
         </div>
-        <button
-          onClick={generateWeeklyTopic}
-          disabled={isGenerating}
-          className="flex items-center gap-2 bg-[#1A1A2E] text-white px-4 py-2.5 rounded-xl text-xs font-bold font-['Space_Mono'] uppercase tracking-wider hover:bg-[#2a2a4e] transition-all disabled:opacity-50"
-        >
-          <RefreshCw size={13} className={isGenerating ? 'animate-spin' : ''} />
-          {isGenerating ? 'Generating...' : 'New Topic'}
-        </button>
+        <div className="flex flex-col items-end gap-2">
+          {conceptStreak > 0 && (
+            <div className="flex items-center gap-1.5 bg-[#E07B39]/10 rounded-xl px-3 py-1.5">
+              <span className="text-sm">🔥</span>
+              <p className="text-xs font-bold text-[#E07B39] font-['Space_Mono']">
+                {conceptStreak}d streak
+              </p>
+            </div>
+          )}
+          <button
+            onClick={generateWeeklyTopic}
+            disabled={isGenerating}
+            className="flex items-center gap-2 bg-[#1A1A2E] text-white px-4 py-2.5 rounded-xl text-xs font-bold font-['Space_Mono'] uppercase tracking-wider hover:bg-[#2a2a4e] transition-all disabled:opacity-50"
+          >
+            <RefreshCw size={13} className={isGenerating ? 'animate-spin' : ''} />
+            {isGenerating ? 'Generating...' : 'New Topic'}
+          </button>
+        </div>
       </div>
 
       {/* TABS */}
@@ -757,6 +814,77 @@ const Explorer = () => {
       {activeTab === 'current' && renderCurrentTab()}
       {activeTab === 'archive' && renderArchiveTab()}
       {activeTab === 'depth' && renderDepthTab()}
+
+      {/* QUIZ MODAL */}
+      <AnimatePresence>
+        {activeQuiz && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex items-end justify-center pb-6 px-4"
+            style={{ backgroundColor: 'rgba(0,0,0,0.6)' }}
+            onClick={dismissQuiz}
+          >
+            <motion.div
+              initial={{ y: 100, opacity: 0 }}
+              animate={{ y: 0, opacity: 1 }}
+              exit={{ y: 100, opacity: 0 }}
+              transition={{ type: 'spring', bounce: 0.3 }}
+              className="bg-white rounded-3xl p-6 w-full max-w-md"
+              onClick={e => e.stopPropagation()}
+            >
+              {!activeQuiz.done ? (
+                <>
+                  <div className="flex items-center justify-between mb-4">
+                    <p className="text-[9px] font-bold text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest">
+                      Retention Check · Q{activeQuiz.currentQ + 1} / {activeQuiz.questions.length}
+                    </p>
+                    <button onClick={dismissQuiz} className="text-[#9A9590] text-xs">✕</button>
+                  </div>
+                  <p className="text-sm font-bold text-[#1A1A2E] font-['Inter'] mb-4 leading-relaxed">
+                    {activeQuiz.questions[activeQuiz.currentQ].question}
+                  </p>
+                  <div className="space-y-2">
+                    {activeQuiz.questions[activeQuiz.currentQ].options.map((opt, i) => (
+                      <button
+                        key={i}
+                        onClick={() => answerQuiz(i)}
+                        className="w-full text-left p-3 rounded-xl bg-[#F5F4F0] hover:bg-[#E5E0D8] text-xs text-[#1A1A2E] font-['Inter'] transition-all"
+                      >
+                        {opt}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <div className="text-center">
+                  <p className="text-4xl mb-3">
+                    {activeQuiz.score === activeQuiz.questions.length ? '🧠' : '📖'}
+                  </p>
+                  <p className="text-[9px] font-bold text-[#9A9590] font-['Space_Mono'] uppercase tracking-widest mb-1">
+                    Quiz Complete
+                  </p>
+                  <p className="text-2xl font-bold text-[#1A1A2E] font-['Space_Mono'] mb-2">
+                    {activeQuiz.score} / {activeQuiz.questions.length}
+                  </p>
+                  <p className="text-sm text-[#9A9590] font-['Inter'] mb-4">
+                    {activeQuiz.score === activeQuiz.questions.length
+                      ? 'Perfect recall. This concept is locked in.'
+                      : 'Good effort. Re-read this concept tomorrow.'}
+                  </p>
+                  <button
+                    onClick={dismissQuiz}
+                    className="w-full bg-[#1A1A2E] text-white py-2.5 rounded-xl text-xs font-bold font-['Space_Mono'] uppercase tracking-wider"
+                  >
+                    Continue
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

@@ -9,10 +9,21 @@ import { format } from 'date-fns';
 import { clsx } from 'clsx';
 import {
   Plus, Check, Trash2, Sword, Zap, Star,
-  ChevronDown, ChevronUp, Filter, Target,
+  ChevronDown, ChevronUp, Filter, Target, CheckCircle2,
   Flame, Clock, RotateCcw,
   Bot, Layers, RefreshCw, AlertCircle
 } from 'lucide-react';
+
+const DOMAIN_COLORS = {
+  health: '#1A6B4A',
+  sde: '#1A1A2E',
+  trading: '#E07B39',
+  explorer: '#7C3AED',
+  finance: '#C0392B',
+  general: '#9A9590',
+  exam: '#E07B39',
+  ai_track: '#1A6B4A'
+};
 
 const QuestLog = () => {
   const [activeTab, setActiveTab] = useState('clusters');
@@ -24,6 +35,7 @@ const QuestLog = () => {
   const [filter, setFilter] = useState('All');
   const [completingId, setCompletingId] = useState(null);
   const [approvingId, setApprovingId] = useState(null);
+  const [isResetting, setIsResetting] = useState(false);
 
   const {
     dailyQuests, todayCompletions, questClusters,
@@ -39,10 +51,10 @@ const QuestLog = () => {
   const { balance } = useWalletStore();
 
   useEffect(() => {
-    if (!questClusters?.length) loadQuestClusters();
-    if (!dailyQuests?.length) loadDailyQuests();
-    if (!todayCompletions?.length) loadDailyQuests(); // Also ensure completions are loaded
+    loadQuestClusters();
+    loadDailyQuests(true); // Always force-refresh on mount
   }, []);
+
 
   const handleGenerateClusters = async () => {
     const contextData = {
@@ -57,6 +69,30 @@ const QuestLog = () => {
     };
     await generateQuestClusters(contextData);
   };
+
+  const handleResetDailyQuests = async () => {
+    if (!window.confirm(
+      'Clear ALL daily quests and reset cluster approvals? This removes corrupt data.'
+    )) return
+    setIsResetting(true)
+    try {
+      const { supabase } = await import('../lib/supabase')
+      await supabase.from('daily_quests').delete().eq('is_active', true)
+      const today = new Date().toISOString().split('T')[0]
+      await supabase
+        .from('quest_clusters')
+        .update({ approved: false, approved_at: null })
+        .eq('cluster_date', today)
+      await loadDailyQuests(true)
+      await loadQuestClusters()
+      setActiveTab('clusters')
+      const { triggerJarvisToast } = await import('../components/JarvisToast')
+      triggerJarvisToast({ type: 'success', title: 'RESET', message: 'Re-approve clusters now.', duration: 3000 })
+    } catch (err) {
+      console.error('Reset error:', err)
+    }
+    setIsResetting(false)
+  }
 
   const completedCount = todayCompletions?.length || 0;
   const totalDaily = dailyQuests?.length || 0;
@@ -123,6 +159,18 @@ const QuestLog = () => {
           >
             <Plus size={13}/>
             Manual
+          </button>
+          <button
+            onClick={handleResetDailyQuests}
+            disabled={isResetting}
+            title="Clear corrupt quest data and start fresh"
+            className="flex items-center gap-1.5 bg-[#C0392B]/10 text-[#C0392B]
+              px-3 py-2.5 rounded-xl text-xs font-bold font-['Space_Mono']
+              uppercase tracking-wider hover:bg-[#C0392B]/20 transition-all
+              disabled:opacity-50 border border-[#C0392B]/20"
+          >
+            <Trash2 size={12}/>
+            {isResetting ? '...' : 'Reset'}
           </button>
         </div>
       </div>
@@ -357,7 +405,10 @@ const QuestLog = () => {
                 </p>
               </div>
               <button
-                onClick={approveAllClusters}
+                onClick={async () => {
+                  await approveAllClusters()
+                  setActiveTab('daily') // Auto-switch to Active tab
+                }}
                 className="flex items-center gap-2 bg-[#E07B39] text-white
                   px-4 py-2 rounded-xl text-xs font-bold font-['Space_Mono']
                   uppercase tracking-wider hover:opacity-90 transition-all
@@ -396,9 +447,22 @@ const QuestLog = () => {
                   }}
                 >
                   <div className="flex items-center gap-3 min-w-0">
-                    <span className="text-2xl shrink-0">
-                      {clusterQuests[0]?.icon || '⚔️'}
-                    </span>
+                    <div
+                      className="w-10 h-10 rounded-xl flex items-center 
+                        justify-center shrink-0"
+                      style={{ 
+                        backgroundColor: (DOMAIN_COLORS[cluster.domain?.toLowerCase()] 
+                          || '#9A9590') + '20'
+                      }}
+                    >
+                      <div
+                        className="w-3 h-3 rounded-full"
+                        style={{ 
+                          backgroundColor: DOMAIN_COLORS[cluster.domain?.toLowerCase()] 
+                            || '#9A9590' 
+                        }}
+                      />
+                    </div>
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 mb-0.5">
                         <p className="text-sm font-bold text-[#1A1A2E]
@@ -435,7 +499,9 @@ const QuestLog = () => {
                           setApprovingId(cluster.id)
                           await approveCluster(cluster.id)
                           setApprovingId(null)
+                          setActiveTab('daily') // Auto-switch to Active tab
                         }}
+
                         disabled={approvingId === cluster.id}
                         className="flex items-center gap-1.5 bg-[#1A1A2E]
                           text-white px-3 py-1.5 rounded-lg text-[10px]
@@ -447,6 +513,7 @@ const QuestLog = () => {
                           : <><Check size={10}/> Add</>
                         }
                       </button>
+
                     )}
                   </div>
                 </div>
@@ -457,7 +524,7 @@ const QuestLog = () => {
                     border-[#E5E0D8]">
                     <p className="text-[10px] text-[#E07B39] font-['Inter']
                       font-medium">
-                      💡 {clusterQuests[0].why_today}
+                      <Zap size={12} className="text-[#E07B39] shrink-0"/> {clusterQuests[0].why_today}
                     </p>
                   </div>
                 )}
@@ -474,7 +541,7 @@ const QuestLog = () => {
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-bold text-[#1A1A2E]
                           font-['Inter']">
-                          {q.title}
+                          {q.title || q.name || 'Unnamed Quest'}
                         </p>
                         {q.description && (
                           <p className="text-[10px] text-[#9A9590]
@@ -543,22 +610,23 @@ const QuestLog = () => {
                 c => c.quest_id === quest.id
               )
               const domainColors = {
-                SDE: { bg: '#EEF2FF', text: '#1A1A2E' },
-                Trading: { bg: '#FFF0E6', text: '#E07B39' },
-                Health: { bg: '#F0FDF4', text: '#1A6B4A' },
-                Exam: { bg: '#FEF2F2', text: '#C0392B' },
-                Finance: { bg: '#EEF2FF', text: '#1A1A2E' },
-                Explorer: { bg: '#F5F3FF', text: '#7C3AED' },
-                General: { bg: '#F5F4F0', text: '#9A9590' }
+                sde: { bg: '#EEF2FF', text: '#1A1A2E' },
+                trading: { bg: '#FFF0E6', text: '#E07B39' },
+                health: { bg: '#F0FDF4', text: '#1A6B4A' },
+                exam: { bg: '#FEF2F2', text: '#C0392B' },
+                finance: { bg: '#EEF2FF', text: '#1A1A2E' },
+                explorer: { bg: '#F5F3FF', text: '#7C3AED' },
+                general: { bg: '#F5F4F0', text: '#9A9590' }
               }
-              const dc = domainColors[quest.domain] || domainColors.General
+              const dKey = (quest.domain || 'general').toLowerCase()
+              const dc = domainColors[dKey] || domainColors.general
 
               return (
-                <motion.div key={quest.id || i}
-                  layout
+                <motion.div key={quest.id || `q-${i}`}
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: i * 0.04 }}
+
                   className={clsx(
                     'bg-white rounded-2xl border transition-all',
                     isDone
@@ -598,7 +666,7 @@ const QuestLog = () => {
                           ? 'text-[#9A9590] line-through'
                           : 'text-[#1A1A2E]'
                       )}>
-                        {quest.title}
+                        {quest.title || quest.name || 'Unnamed Quest'}
                       </p>
                       {quest.description && (
                         <p className="text-[10px] text-[#9A9590]
@@ -645,12 +713,13 @@ const QuestLog = () => {
           {dailyQuests?.filter(q =>
             filter === 'All' || q.domain === filter
           )?.length === 0 && (
-            <div className="text-center py-12">
-              <Target size={28} className="text-[#E5E0D8] mx-auto mb-3"/>
-              <p className="text-sm text-[#9A9590] font-['Inter']">
-                {filter !== 'All'
-                  ? `No ${filter} quests.`
-                  : 'No active quests. Generate or add manually.'}
+            <div className="text-center py-16">
+              <Target size={32} className="text-[#E5E0D8] mx-auto mb-3"/>
+              <p className="text-sm font-bold text-[#1A1A2E] font-['Inter'] mb-1">
+                No Active Quests
+              </p>
+              <p className="text-xs text-[#9A9590] font-['Inter'] max-w-xs mx-auto">
+                Generate a cluster or add quests manually.
               </p>
             </div>
           )}
@@ -661,10 +730,13 @@ const QuestLog = () => {
       {activeTab === 'completed' && (
         <div className="flex flex-col gap-3">
           {todayCompletions?.length === 0 && (
-            <div className="text-center py-12">
-              <Check size={28} className="text-[#E5E0D8] mx-auto mb-3"/>
-              <p className="text-sm text-[#9A9590] font-['Inter']">
-                Nothing completed yet today.
+            <div className="text-center py-16">
+              <CheckCircle2 size={32} className="text-[#E5E0D8] mx-auto mb-3"/>
+              <p className="text-sm font-bold text-[#1A1A2E] font-['Inter'] mb-1">
+                Nothing Completed Yet
+              </p>
+              <p className="text-xs text-[#9A9590] font-['Inter'] max-w-xs mx-auto">
+                Complete quests to see them here.
               </p>
             </div>
           )}
@@ -683,7 +755,7 @@ const QuestLog = () => {
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-bold text-[#9A9590]
                   font-['Inter'] line-through truncate">
-                  {item.quest_title || item.title}
+                  {item.quest_title || item.title || 'Quest completed'}
                 </p>
               </div>
               <span className="text-[10px] font-bold text-[#1A6B4A]

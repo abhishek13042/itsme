@@ -4,6 +4,7 @@ import { awardXP } from '../lib/xpEngine';
 import { calculateAllStats } from '../lib/statCalculator';
 import { triggerJarvisToast } from '../components/JarvisToast';
 import { getJarvisLine } from '../lib/jarvisReactions';
+import { saveBrainLogMemory } from '../lib/globalMemory'
 
 export const useCharacterStore = create((set, get) => ({
   stats: {
@@ -119,6 +120,8 @@ export const useCharacterStore = create((set, get) => ({
         .single();
       
       if (error) throw error;
+
+      saveBrainLogMemory(entry) // fire and forget
 
       // Add to local state
       set(state => ({ brainLogs: [data, ...state.brainLogs] }));

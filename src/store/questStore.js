@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { completeQuest, completeBossTask, getBossStatus, checkWeeklyBonus } from '../lib/questEngine';
 import { triggerJarvisToast } from '../components/JarvisToast';
 import { getJarvisLine } from '../lib/jarvisReactions';
+import { saveQuestMemory, loadMemories, MEMORY_TYPES } from '../lib/globalMemory'
 
 export const useQuestStore = create((set, get) => ({
   activeQuests: [],
@@ -25,6 +26,8 @@ export const useQuestStore = create((set, get) => ({
   deleteTimeouts: {},
   lastLoaded: null,
   lastDailiesLoaded: null,
+  weeklyCompletionRate: 0,
+  domainCompletionMap: {},
 
   loadQuests: async (force = false) => {
     if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
@@ -50,6 +53,63 @@ export const useQuestStore = create((set, get) => ({
     } catch (err) {
       console.error('Failed to load quests:', err);
       set({ loading: false, isLoading: false });
+    }
+    
+    // Refresh stats
+    get().computeWeeklyStats();
+  },
+
+  computeWeeklyStats: async () => {
+    try {
+      const weekStart = new Date()
+      weekStart.setDate(weekStart.getDate() - 7)
+      const fromDate = weekStart.toISOString().split('T')[0]
+
+      const [completionsRes, questsRes] = await Promise.all([
+        supabase.from('daily_completions')
+          .select('quest_id, completed_date')
+          .gte('completed_date', fromDate),
+        supabase.from('daily_quests')
+          .select('id, domain, difficulty')
+          .eq('is_active', true)
+      ])
+
+      const completions = completionsRes.data || []
+      const quests = questsRes.data || []
+      
+      const completedIds = new Set(completions.map(c => c.quest_id))
+      const completionRate = quests.length > 0
+        ? Math.round((completedIds.size / quests.length) * 100)
+        : 0
+
+      // Domain completion map
+      const domainMap = {}
+      const domains = ['sde', 'trading', 'health', 'explorer', 'ai_track', 'finance']
+      
+      domains.forEach(domain => {
+        const domainQuests = quests.filter(q => q.domain?.toLowerCase() === domain)
+        const domainDone = domainQuests.filter(q => completedIds.has(q.id)).length
+        domainMap[domain] = {
+          total: domainQuests.length,
+          completed: domainDone,
+          rate: domainQuests.length > 0
+            ? Math.round((domainDone / domainQuests.length) * 100)
+            : null,
+          lastCompletionDate: completions
+            .filter(c => {
+              const q = quests.find(q => q.id === c.quest_id)
+              return q?.domain?.toLowerCase() === domain
+            })
+            .sort((a,b) => new Date(b.completed_date) - new Date(a.completed_date))[0]?.completed_date || null
+        }
+      })
+
+      set({ 
+        weeklyCompletionRate: completionRate,
+        domainCompletionMap: domainMap
+      })
+    } catch (err) {
+      console.error('computeWeeklyStats error:', err)
     }
   },
 
@@ -105,14 +165,27 @@ export const useQuestStore = create((set, get) => ({
     if (!force && get().lastDailiesLoaded && Date.now() - get().lastDailiesLoaded < 120000) return;
     try {
       const today = new Date().toISOString().split('T')[0];
-      const { data: dailies } = await supabase.from('daily_quests').select('*').eq('is_active', true);
+      // Use select('*') to avoid breaking if optional columns (cluster_id) don't exist yet
+      const { data: dailies, error: dailiesError } = await supabase
+        .from('daily_quests')
+        .select('*')
+        .eq('is_active', true);
+
+      if (dailiesError) {
+        console.error('loadDailyQuests error:', dailiesError)
+      }
+
       const { data: completions } = await supabase
         .from('daily_completions')
         .select('*, daily_quests(title, xp_reward, domain)')
         .eq('completed_date', today);
       
       set({ 
-        dailyQuests: dailies || [], 
+        // Filter out corrupt rows: skip quests with no title or tiny XP (old corrupt data)
+        dailyQuests: (dailies || []).filter(q => 
+          q.title && q.title.trim() !== '' && (q.xp_reward || 0) >= 30
+        ),
+
         todayCompletions: completions?.map(c => ({
           ...c,
           quest_title: c.daily_quests?.title,
@@ -126,33 +199,49 @@ export const useQuestStore = create((set, get) => ({
     }
   },
 
+
   completeDaily: async (questId) => {
     const previousCompletions = [...get().todayCompletions];
+    const today = new Date().toISOString().split('T')[0];
     
-    // Optimistic Update
+    // Optimistic Update — push as object so isDone check works immediately in CommandCenter
     set(state => ({
-      todayCompletions: [...state.todayCompletions, questId]
+      todayCompletions: [...state.todayCompletions, { quest_id: questId, completed_date: today }]
     }));
 
     try {
       const { completeDailyQuest } = await import('../lib/questEngine');
       const result = await completeDailyQuest(questId);
 
-      if (!result.success) {
-        // Rollback
+      if (!result.success && result.alreadyCompleted !== true) {
+        // Rollback on genuine failure
         set({ todayCompletions: previousCompletions });
-        throw new Error(result.error);
+        throw new Error(result.error || 'Unknown error completing quest');
       }
 
-      // Refresh data
+      // Refresh XP store so XP bar updates immediately
+      const { useXpStore } = await import('./xpStore');
+      if (useXpStore.getState().loadPlayerState) {
+        useXpStore.getState().loadPlayerState();
+      }
+
+      // Save memory BEFORE reload so JARVIS has context for tomorrow's generation
+      const completedQuest = get().dailyQuests.find(q => q.id === questId)
+      if (completedQuest) {
+        saveQuestMemory(completedQuest) // fire and forget
+      }
+
+      // Refresh completions from DB to confirm
       await get().loadDailyQuests();
 
       // Fire toast
-      const quest = get().dailyQuests.find(q => q.id === questId);
-      const allDone = get().todayCompletions.length >= get().dailyQuests.length;
+      const quest = get().dailyQuests.find(q => q.id === questId) || 
+                    { title: 'Quest', xp_reward: result.xpAwarded || 50, domain: 'QUEST' };
+      const totalDone = get().todayCompletions.length;
+      const totalActive = get().dailyQuests.length;
+      const allDone = totalDone >= totalActive && totalActive > 0;
 
       if (allDone) {
-        // All quests done — big moment
         triggerJarvisToast({
           type: 'success',
           title: 'ALL MISSIONS COMPLETE',
@@ -160,9 +249,8 @@ export const useQuestStore = create((set, get) => ({
           message: 'Every quest done. Legendary.',
           duration: 5000
         });
-        // Get JARVIS line async and update toast
         getJarvisLine('all_quests_done', { 
-          total: get().dailyQuests.length 
+          total: totalActive
         }).then(line => {
           if (line) triggerJarvisToast({
             type: 'success',
@@ -173,11 +261,10 @@ export const useQuestStore = create((set, get) => ({
           });
         });
       } else {
-        // Single quest done
         triggerJarvisToast({
           type: 'xp',
-          title: quest?.domain || 'QUEST',
-          xp: quest?.xp_reward || 100,
+          title: quest?.domain?.toUpperCase() || 'QUEST',
+          xp: result.xpAwarded || quest?.xp_reward || 50,
           message: quest?.title || 'Quest complete',
           duration: 3500
         });
@@ -187,8 +274,8 @@ export const useQuestStore = create((set, get) => ({
         }).then(line => {
           if (line) triggerJarvisToast({
             type: 'xp',
-            title: quest?.domain || 'QUEST',
-            xp: quest?.xp_reward || 100,
+            title: quest?.domain?.toUpperCase() || 'QUEST',
+            xp: result.xpAwarded || 100,
             jarvisLine: line,
             duration: 3500
           });
@@ -202,6 +289,7 @@ export const useQuestStore = create((set, get) => ({
       throw err;
     }
   },
+
 
   addDailyQuest: async (quest) => {
     try {
@@ -298,17 +386,45 @@ export const useQuestStore = create((set, get) => ({
     set({ isGeneratingClusters: true })
     try {
       const today = new Date().toISOString().split('T')[0]
+      
+      let memoryContext = ''
+      try {
+        const [questMemory, globalMemory] = await Promise.all([
+          loadMemories(MEMORY_TYPES.QUEST, 10),
+          loadMemories(MEMORY_TYPES.GLOBAL, 5)
+        ])
+
+        memoryContext = [
+          ...questMemory.map(m => m.content),
+          ...globalMemory.map(m => m.content)
+        ].join('\n- ')
+      } catch (memErr) {
+        console.error('Failed to load memory for quests:', memErr)
+      }
+
       const gymStartDate = new Date('2026-06-16')
       const daysUntilGym = Math.max(0, 
         Math.ceil((gymStartDate - new Date()) / (1000 * 60 * 60 * 24))
       )
-      const gymStarted = new Date() >= gymStartDate
-
-      const prompt = `You are the quest engine for PLAYER ONE — 
-      Abhishek's personal life RPG. Generate a full day of 
-      personalized quest clusters for him.
-
-      WHO HE IS:
+       const gymStarted = new Date() >= gymStartDate
+ 
+       const { weeklyCompletionRate } = get()
+       const difficultyGuide = weeklyCompletionRate >= 90
+         ? 'Generate HARD difficulty quests. User is crushing it — push harder.'
+         : weeklyCompletionRate >= 70
+           ? 'Generate MEDIUM-HARD mix. User is doing well — maintain challenge.'
+           : weeklyCompletionRate >= 50
+             ? 'Generate MEDIUM difficulty quests. Balanced challenge.'
+             : 'Generate EASY-MEDIUM mix. User needs momentum — build confidence first.'
+ 
+       const prompt = `You are the quest engine for PLAYER ONE — 
+       Abhishek's personal life RPG. Generate a full day of 
+       personalized quest clusters for him.
+ 
+       DIFFICULTY GUIDANCE: ${difficultyGuide}
+       Weekly completion rate: ${weeklyCompletionRate}%
+ 
+       WHO HE IS:
       - Abhishek, 20yo CSE student at IIIT Nagpur, Semester 4-6
       - First-generation college student, lower CGPA, going off-campus
       - Vegetarian + eggs (no meat, no fish)
@@ -369,7 +485,15 @@ export const useQuestStore = create((set, get) => ({
         }
       ]
 
-      Generate exactly 5 clusters with 2-4 quests each.`
+      Generate exactly 5 clusters with 2-4 quests each.
+      
+      ${memoryContext ? `
+      MEMORY — What Abhishek has done recently:
+      - ${memoryContext}
+
+      Generate quests that BUILD ON this history.
+      Don't repeat completed quests. Progress from where he is.
+      ` : ''}`
 
       const { callGroq } = await import('../lib/groq')
       const result = await callGroq({ 
@@ -377,9 +501,23 @@ export const useQuestStore = create((set, get) => ({
         max_tokens: 2000,
         temperature: 0.85
       })
-      const raw = result.text
-      const cleaned = raw.replace(/```json|```/g, '').trim()
-      const clusters = JSON.parse(cleaned)
+
+      let clusters = []
+      if (result.error) {
+        console.error('Groq error:', result.error)
+        const { FALLBACK_QUEST_CLUSTERS } = await import('../lib/fallbackQuests')
+        clusters = FALLBACK_QUEST_CLUSTERS
+      } else {
+        try {
+          const raw = result.text
+          const cleaned = raw.replace(/```json|```/g, '').trim()
+          clusters = JSON.parse(cleaned)
+        } catch (parseErr) {
+          console.error('Quest Cluster JSON Parse Error:', parseErr, 'Raw:', result.text)
+          const { FALLBACK_QUEST_CLUSTERS } = await import('../lib/fallbackQuests')
+          clusters = FALLBACK_QUEST_CLUSTERS
+        }
+      }
 
       // Save to Supabase
       const { supabase } = await import('../lib/supabase')
@@ -440,30 +578,54 @@ export const useQuestStore = create((set, get) => ({
       return []
     }
   },
-
   approveCluster: async (clusterId) => {
     try {
       const { supabase } = await import('../lib/supabase')
       const cluster = get().questClusters.find(c => c.id === clusterId)
       if (!cluster) return
 
-      // Add each quest in the cluster to daily_quests
-      const questsToAdd = cluster.quests.map(q => ({
-        title: q.title,
-        description: q.description,
-        xp_reward: q.xp_reward,
-        domain: cluster.domain,
-        difficulty: q.difficulty,
-        is_active: true,
-        source: 'jarvis',
-        cluster_id: clusterId
-      }))
+      // Safe mapping
+      const validQuests = (cluster.quests || []).map(q => {
+        const title = q.title || q.name || 'Unnamed Mission'
+        if (!title || title === 'Unnamed Mission') return null
+        return {
+          title: title,
+          quest_text: title, // Support legacy column name to prevent null constraint errors
+          description: q.description || '',
+          xp_reward: Number(q.xp_reward) || 50,
+          domain: cluster.domain || 'General',
+          difficulty: q.difficulty || 'Medium',
+          is_active: true,
+          source: 'jarvis',
+          cluster_id: clusterId
+        }
 
-      for (const quest of questsToAdd) {
-        await supabase.from('daily_quests').insert([quest])
+      }).filter(Boolean)
+
+      if (validQuests.length === 0) {
+        triggerJarvisToast({ type: 'warning', title: 'EMPTY CLUSTER', message: 'No valid quests found.' })
+        return
       }
 
-      // Mark cluster as approved
+      // Try inserting with cluster_id first
+      let { data: inserted, error: insError } = await supabase
+        .from('daily_quests')
+        .insert(validQuests)
+        .select()
+
+      if (insError) {
+        console.warn('Retrying insert without cluster_id...', insError.message)
+        const questsNoId = validQuests.map(({ cluster_id, ...rest }) => rest)
+        const { data: retryData, error: retryError } = await supabase
+          .from('daily_quests')
+          .insert(questsNoId)
+          .select()
+
+        if (retryError) throw retryError
+        inserted = retryData
+      }
+
+      // Mark cluster approved
       await supabase
         .from('quest_clusters')
         .update({ approved: true, approved_at: new Date().toISOString() })
@@ -474,21 +636,108 @@ export const useQuestStore = create((set, get) => ({
         questClusters: state.questClusters.map(c => 
           c.id === clusterId ? { ...c, approved: true } : c
         ),
-        clustersApproved: true
+        dailyQuests: [
+          ...state.dailyQuests,
+          ...(inserted || []).filter(q => q.title && q.title.trim() !== '')
+        ]
       }))
 
-      // Reload daily quests
+      // Force refresh
+      set({ lastDailiesLoaded: null })
       await get().loadDailyQuests(true)
+
+      triggerJarvisToast({
+        type: 'success',
+        title: 'ACTIVATED',
+        message: `${validQuests.length} quests added to Active.`,
+        duration: 3000
+      })
 
     } catch (err) {
       console.error('approveCluster error:', err)
+      triggerJarvisToast({
+        type: 'error',
+        title: 'ACTIVATION FAILED',
+        message: err.message?.substring(0, 50) || 'Check DB schema'
+      })
     }
   },
 
   approveAllClusters: async () => {
-    const unapproved = get().questClusters.filter(c => !c.approved)
-    for (const cluster of unapproved) {
-      await get().approveCluster(cluster.id)
+    try {
+      const { supabase } = await import('../lib/supabase')
+      const unapproved = get().questClusters.filter(c => !c.approved)
+      if (unapproved.length === 0) return
+
+      set({ isGeneratingClusters: true }) 
+      console.log('approveAllClusters: processing', unapproved.length, 'clusters')
+
+      for (const cluster of unapproved) {
+        // Safe quest mapping
+        const questsToAdd = (cluster.quests || []).map(q => {
+          const title = q.title || q.name || 'Unnamed Mission'
+          if (!title || title === 'Unnamed Mission') return null
+          
+          return {
+            title: title,
+            quest_text: title, // Support legacy column name
+            description: q.description || '',
+            xp_reward: Number(q.xp_reward) || 50,
+            domain: cluster.domain || 'General',
+            difficulty: q.difficulty || 'Medium',
+            is_active: true,
+            source: 'jarvis',
+            cluster_id: cluster.id
+          }
+
+        }).filter(Boolean)
+
+        if (questsToAdd.length === 0) {
+          console.warn(`Cluster ${cluster.id} has no valid quests, skipping.`)
+          continue
+        }
+
+        // Insert individual quests
+        const { data: insData, error: insError } = await supabase
+          .from('daily_quests')
+          .insert(questsToAdd)
+          .select()
+
+        if (insError) {
+          console.error(`Failed to insert quests for cluster ${cluster.id}:`, insError)
+          // Don't mark cluster as approved if quests failed
+          continue 
+        }
+
+        // Only if quests were added, mark cluster approved
+        const { error: updError } = await supabase
+          .from('quest_clusters')
+          .update({ approved: true, approved_at: new Date().toISOString() })
+          .eq('id', cluster.id)
+          
+        if (updError) console.error('Failed to mark cluster approved:', updError)
+      }
+
+      // Force a full refresh of the store
+      set({ lastDailiesLoaded: null })
+      await get().loadDailyQuests(true)
+      await get().loadQuestClusters()
+      
+      set({ isGeneratingClusters: false })
+      
+      const activeCount = get().dailyQuests.length
+      triggerJarvisToast({
+        type: 'success',
+        title: 'Missions Activated',
+        message: `${activeCount} quests are now live.`,
+        duration: 4000
+      })
+    } catch (err) {
+      console.error('approveAllClusters fatal error:', err)
+      set({ isGeneratingClusters: false })
+      triggerJarvisToast({ type: 'error', title: 'SYSTEM ERROR', message: 'Mission activation failed.' })
     }
   }
+
+
 }));

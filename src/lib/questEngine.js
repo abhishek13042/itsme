@@ -230,16 +230,22 @@ export const completeDailyQuest = async (questId) => {
 
     if (insertError) throw insertError;
 
-    // 4. Award XP and Gold (xpReward * 25 paise)
-    const xpResult = await awardXP(quest.xp_reward, `daily:${quest.quest_text}`);
+    // 4. Award XP (use title or quest_text, whichever is present)
+    const questTitle = quest.title || quest.quest_text || 'Daily Quest'
+    const xpResult = await awardXP(quest.xp_reward || 50, `daily:${questTitle}`);
     const goldEarned = quest.xp_reward * 25;
     
-    // Update daily_completions if needed, or just player state
-    await supabase.rpc('increment_wallet', { amount: goldEarned }); // Example RPC if exists
+    // Award gold if RPC exists (gracefully skip if not)
+    try {
+      await supabase.rpc('increment_wallet', { amount: goldEarned });
+    } catch (e) {
+      // RPC may not exist — not critical
+    }
 
     return {
+      success: true,
       xpAwarded: xpResult.xpAwarded,
-      goldEarned: goldEarned,
+      goldEarned,
       newLevel: xpResult.newLevel,
       levelUp: xpResult.levelUp
     };

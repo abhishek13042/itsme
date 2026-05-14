@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { loadMemories, saveMemory, MEMORY_TYPES } from '../lib/globalMemory'
 
 const AI_TRACK_DATA = {
   startDate: '2026-05-17',
@@ -739,10 +740,15 @@ const AI_TRACK_DATA = {
 
 export const useAiTrackStore = create((set, get) => ({
   progress: {},
+  difficultyRatings: {},
   explorerSessions: {},
   isLoadingProgress: false,
   isGeneratingExploration: false,
   activeExploration: null,
+  completedClusters: {},
+  clusterCompletionLoaded: false,
+  topicMinutes: {},
+  timeLoaded: false,
 
   loadProgress: async () => {
     set({ isLoadingProgress: true });
@@ -753,6 +759,7 @@ export const useAiTrackStore = create((set, get) => ({
         .select('*');
       
       const progressMap = {};
+      const ratings = {};
       data?.forEach(row => {
         progressMap[row.topic_id] = {
           phase1_done: row.phase1_done,
@@ -761,12 +768,180 @@ export const useAiTrackStore = create((set, get) => ({
           phase2_date: row.phase2_date,
           notes: row.notes
         };
+        if (row.difficulty_rating !== null && row.difficulty_rating !== undefined) {
+          ratings[row.topic_id] = row.difficulty_rating;
+        }
       });
-      set({ progress: progressMap, isLoadingProgress: false });
+      set({ 
+        progress: progressMap, 
+        difficultyRatings: ratings,
+        isLoadingProgress: false 
+      });
     } catch (err) {
       console.error('loadProgress error:', err);
       set({ isLoadingProgress: false });
     }
+  },
+
+  loadCompletedClusters: async () => {
+    const { supabase } = await import('../lib/supabase');
+    const { data } = await supabase
+      .from('ai_sessions')
+      .select('context_snapshot, session_date')
+      .eq('type', 'cluster_completion')
+    
+    const completed = {}
+    ;(data || []).forEach(row => {
+      try {
+        const ctx = JSON.parse(row.context_snapshot)
+        if (ctx.clusterId) {
+          completed[ctx.clusterId] = {
+            completedAt: row.session_date,
+            topicsCompleted: ctx.topicsCompleted
+          }
+        }
+      } catch {}
+    })
+    set({ completedClusters: completed, clusterCompletionLoaded: true })
+  },
+
+  loadTopicTime: async () => {
+    const { supabase } = await import('../lib/supabase');
+    const { data } = await supabase
+      .from('ai_track_progress')
+      .select('topic_id, minutes_logged')
+      .not('minutes_logged', 'is', null)
+
+    const minutesMap = {}
+    ;(data || []).forEach(row => {
+      if (row.minutes_logged) {
+        minutesMap[row.topic_id] = row.minutes_logged
+      }
+    })
+    set({ topicMinutes: minutesMap, timeLoaded: true })
+  },
+
+  logTopicTime: async (topicId, topicTitle, sectionId, cluster, minutes) => {
+    if (!minutes || minutes <= 0) return
+    
+    const current = get().topicMinutes[topicId] || 0
+    const newTotal = current + minutes
+    
+    // Optimistic
+    set(state => ({
+      topicMinutes: { ...state.topicMinutes, [topicId]: newTotal }
+    }))
+
+    try {
+      const { supabase } = await import('../lib/supabase');
+      await supabase
+        .from('ai_track_progress')
+        .upsert({
+          topic_id: topicId,
+          topic_title: topicTitle,
+          section_id: sectionId,
+          cluster: cluster,
+          minutes_logged: newTotal,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'topic_id' })
+    } catch (err) {
+      console.error('logTopicTime error:', err)
+    }
+  },
+
+  getSectionMinutes: (sectionId) => {
+    const { topicMinutes } = get()
+    const cluster = AI_TRACK_DATA.clusters.find(c => 
+      c.sections.find(s => s.id === sectionId)
+    )
+    if (!cluster) return 0
+    const section = cluster.sections.find(s => s.id === sectionId)
+    if (!section) return 0
+    return section.topics.reduce((sum, topic) => 
+      sum + (topicMinutes[topic.id] || 0), 0
+    )
+  },
+
+  getClusterMinutes: (clusterId) => {
+    const { topicMinutes } = get()
+    const cluster = AI_TRACK_DATA.clusters.find(c => c.id === clusterId)
+    if (!cluster) return 0
+    return cluster.sections.flatMap(s => s.topics)
+      .reduce((sum, topic) => 
+        sum + (topicMinutes[topic.id] || 0), 0
+      )
+  },
+
+  getSlowestTopics: () => {
+    const { topicMinutes } = get()
+    return Object.entries(topicMinutes)
+      .filter(([, mins]) => mins > 0)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([topicId, minutes]) => {
+        let topicTitle = topicId
+        AI_TRACK_DATA.clusters.forEach(c => {
+          c.sections.forEach(s => {
+            s.topics.forEach(t => {
+              if (t.id === topicId) topicTitle = t.title
+            })
+          })
+        })
+        return { topicId, topicTitle, minutes }
+      })
+  },
+
+  checkClusterCompletion: async (clusterId, clusterName) => {
+    const { progress, completedClusters } = get()
+
+    // Already celebrated this cluster
+    if (completedClusters[clusterId]) return
+
+    // Get all topic IDs for this cluster
+    const cluster = AI_TRACK_DATA.clusters.find(c => c.id === clusterId)
+    if (!cluster) return
+
+    const allTopicIds = cluster.sections.flatMap(s => 
+      s.topics.map(t => t.id)
+    )
+    const completedCount = allTopicIds.filter(id => 
+      progress[id]?.phase2_done
+    ).length
+
+    if (completedCount < allTopicIds.length) return
+
+    // All topics done — save milestone
+    const { supabase } = await import('../lib/supabase');
+    const { getTodayIST } = await import('../lib/dateUtils');
+    const today = getTodayIST()
+    await supabase.from('ai_sessions').insert({
+      type: 'cluster_completion',
+      session_date: today,
+      user_input: clusterId,
+      ai_response: clusterName,
+      context_snapshot: JSON.stringify({
+        clusterId,
+        clusterName,
+        topicsCompleted: allTopicIds.length,
+        completedAt: new Date().toISOString()
+      })
+    })
+
+    set(state => ({
+      completedClusters: {
+        ...state.completedClusters,
+        [clusterId]: {
+          completedAt: today,
+          topicsCompleted: allTopicIds.length
+        }
+      }
+    }))
+
+    // Trigger celebration
+    const { triggerClusterCelebration } = await import(
+      '../components/ClusterCelebration'
+    )
+    triggerClusterCelebration(clusterName, allTopicIds.length)
   },
 
   togglePhase1: async (topicId, topicTitle, sectionId, cluster) => {
@@ -843,6 +1018,41 @@ export const useAiTrackStore = create((set, get) => ({
     }
   },
 
+  rateTopic: async (topicId, topicTitle, sectionId, cluster, rating) => {
+    set(state => ({
+      difficultyRatings: { 
+        ...state.difficultyRatings, 
+        [topicId]: rating 
+      }
+    }));
+    
+    try {
+      const { supabase } = await import('../lib/supabase');
+      await supabase
+        .from('ai_track_progress')
+        .upsert({
+          topic_id: topicId,
+          topic_title: topicTitle,
+          section_id: sectionId,
+          cluster: cluster,
+          difficulty_rating: rating,
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'topic_id' });
+    } catch (err) {
+      console.error('rateTopic error:', err);
+    }
+  },
+
+  getRevisionQueue: () => {
+    const { difficultyRatings, progress } = get();
+    return Object.entries(difficultyRatings)
+      .filter(([topicId, rating]) => 
+        rating >= 4 && progress[topicId]?.phase2_done
+      )
+      .map(([topicId, rating]) => ({ topicId, rating }))
+      .sort((a, b) => b.rating - a.rating);
+  },
+
   saveTopicNotes: async (topicId, notes) => {
     set(state => ({
       progress: {
@@ -863,6 +1073,14 @@ export const useAiTrackStore = create((set, get) => ({
   generateExploration: async (topic, section) => {
     set({ isGeneratingExploration: true, activeExploration: null });
     try {
+      let memoryContext = ''
+      try {
+        const aiTrackMemory = await loadMemories(MEMORY_TYPES.AI_TRACK, 5)
+        memoryContext = aiTrackMemory.map(m => m.content).join('\n- ')
+      } catch (memErr) {
+        console.error('Failed to load ai track memory:', memErr)
+      }
+
       const prompt = `You are an intellectual guide for Abhishek — a 20-year-old Indian engineering student becoming an AI Engineer. He is about to start Week 1 self-exploration of this topic before formal study in Week 2.
 
 Topic: ${topic.title}
@@ -911,7 +1129,15 @@ Return ONLY valid JSON, no markdown, no backticks:
 }
 
 Generate exactly 3 key_questions, 4 concepts_to_investigate, 2 books, 2 papers, 3 exploration_tasks.
-All books and papers must be REAL with accurate information.`;
+All books and papers must be REAL with accurate information.
+      
+      ${memoryContext ? `
+      RECENT AI TRACK PROGRESS:
+      - ${memoryContext}
+
+      Reference this in the exploration — show how this topic
+      connects to what has been studied before.
+      ` : ''}`;
 
       const { callGroq } = await import('../lib/groq');
       const result = await callGroq({
@@ -919,9 +1145,23 @@ All books and papers must be REAL with accurate information.`;
         max_tokens: 1500,
         temperature: 0.85
       });
-      const raw = result.text;
-      const cleaned = raw.replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(cleaned);
+
+      if (result.error) {
+        console.error('Groq error:', result.error)
+        set({ isGeneratingExploration: false });
+        return null;
+      }
+
+      let parsed = null;
+      try {
+        const raw = result.text;
+        const cleaned = raw.replace(/```json|```/g, '').trim();
+        parsed = JSON.parse(cleaned);
+      } catch (parseErr) {
+        console.error('Exploration JSON Parse Error:', parseErr, 'Raw:', result.text)
+        set({ isGeneratingExploration: false });
+        return null;
+      }
 
       const { supabase } = await import('../lib/supabase');
       await supabase.from('ai_track_explorer').upsert({
@@ -939,6 +1179,14 @@ All books and papers must be REAL with accurate information.`;
       }, { onConflict: 'topic_id' });
 
       set({ activeExploration: { ...parsed, topic_id: topic.id }, isGeneratingExploration: false });
+
+      saveMemory({
+        type: MEMORY_TYPES.AI_TRACK,
+        content: `Explored topic: "${topic.title}" in section: "${section.id}"`,
+        source: 'ai_track_exploration',
+        importance: 7
+      })
+
       return parsed;
     } catch (err) {
       console.error('generateExploration error:', err);

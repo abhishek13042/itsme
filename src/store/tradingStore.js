@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 import { awardXP } from '../lib/xpEngine';
 import { rewards } from '../lib/rewards';
 import { seedTradingSystem } from '../lib/tradingSeeder';
+import { saveTradingMemory } from '../lib/globalMemory'
 
 export const useTradingStore = create((set, get) => ({
   trades: [],
@@ -74,8 +75,24 @@ export const useTradingStore = create((set, get) => ({
 
   logTrade: async (tradeData) => {
     try {
-      const { data, error } = await supabase.from('trades').insert([tradeData]).select().single();
-      if (error) throw error;
+      let result;
+      try {
+        // Attempt with new columns
+        const { data, error } = await supabase.from('trades').insert([{
+          ...tradeData,
+          rules_score: tradeData.rules_score,
+          checklist_passed: tradeData.checklist_passed,
+          session: tradeData.session || null
+        }]).select().single();
+        if (error) throw error;
+        result = data;
+      } catch (schemaErr) {
+        // Fallback if columns don't exist in Supabase yet
+        console.warn('New trading columns missing, falling back to original insert.');
+        const { data, error } = await supabase.from('trades').insert([tradeData]).select().single();
+        if (error) throw error;
+        result = data;
+      }
 
       // Handle rewards/penalties based on new ICT rules
       if (tradeData.rules_followed === 'YES') {
@@ -87,8 +104,10 @@ export const useTradingStore = create((set, get) => ({
         await awardXP(-20, 'Penalty: Rules broken');
       }
 
+      saveTradingMemory(result) // fire and forget
+
       await get().loadTradingData();
-      return data;
+      return result;
     } catch (err) {
       console.error('Failed to log trade:', err);
       throw err;
