@@ -522,34 +522,36 @@ const CommandCenter = () => {
               )}
             </div>
           </div>
-        </div>
 
-        {/* Quick Nav strip */}
-        <div className="mb-4 -mx-1">
-          <div className="flex gap-2 overflow-x-auto pb-1 px-1 scrollbar-hide" style={{ scrollbarWidth: 'none' }}>
-            {QUICK_NAV.map((item) => {
-              const Icon = item.icon
-              return (
-                <button
-                  key={item.path}
-                  onClick={() => navigate(item.path)}
-                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl
-                    bg-white border border-[#E5E0D8] shrink-0
-                    hover:border-[#1A1A2E] hover:shadow-sm transition-all
-                    group"
-                >
-                  <Icon size={12} style={{ color: item.color }}/>
-                  <span className="text-[10px] font-bold font-['Space_Mono']
-                    uppercase tracking-wider text-[#9A9590] 
-                    group-hover:text-[#1A1A2E] transition-colors whitespace-nowrap">
-                    {item.label}
-                  </span>
-                </button>
-              )
-            })}
+          {/* Quick Nav Row — Integrated for guaranteed visibility */}
+          <div className="mt-4 pt-4 border-t border-white/10">
+            <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+              {QUICK_NAV.map((item) => {
+                const Icon = item.icon
+                return (
+                  <button
+                    key={item.path}
+                    onClick={() => navigate(item.path)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                      bg-white/5 border border-white/10 shrink-0
+                      hover:bg-white/10 hover:border-white/20 transition-all
+                      group"
+                  >
+                    <Icon size={11} style={{ color: item.color }}/>
+                    <span className="text-[10px] font-bold font-['Space_Mono']
+                      uppercase tracking-wider text-white/50 
+                      group-hover:text-white transition-colors whitespace-nowrap">
+                      {item.label}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
           </div>
         </div>
+
       </div>
+
 
       {/* Weekly Digest Card */}
       <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 mb-6">
