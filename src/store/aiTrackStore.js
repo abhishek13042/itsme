@@ -140,7 +140,7 @@ const AI_TRACK_DATA = {
           paid_course: { name: 'DSA for AI — CampusX', price: 2499, url: 'https://learnwith.campusx.in' },
           books: [],
           papers: [],
-          note: 'Run parallel with everything. 1 hour daily. Target 250+ LeetCode problems. Tracked separately in SDE Roadmap.',
+          note: 'Run parallel with everything. 1 hour daily. Target 474+ Striver A2Z problems. Tracked separately in SDE Roadmap.',
           topics: [
             { id: 'A5-1', title: 'Arrays, Strings, Hashmaps', desc: 'Most interview questions come from here' },
             { id: 'A5-2', title: 'Trees & Binary Search', desc: 'Core data structures' },

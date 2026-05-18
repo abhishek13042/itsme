@@ -8,6 +8,7 @@ import {
 } from '../store/walletStore';
 import {
   LayoutDashboard,
+  Target,
   CalendarCheck,
   Sword,
   User,
@@ -258,6 +259,7 @@ const Sidebar = () => {
         </p>
 
         {[
+          { to: '/goals', icon: Target, label: 'Goals' },
           { to: '/', icon: LayoutDashboard, label: 'Command Center' },
           { to: '/tracker', icon: CalendarCheck, label: 'Tracker' },
           { to: '/quests', icon: Sword, label: 'Quest Log' },

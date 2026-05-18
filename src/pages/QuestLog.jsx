@@ -11,7 +11,8 @@ import {
   Plus, Check, Trash2, Sword, Zap, Star,
   ChevronDown, ChevronUp, Filter, Target, CheckCircle2,
   Flame, Clock, RotateCcw,
-  Bot, Layers, RefreshCw, AlertCircle
+  Bot, Layers, RefreshCw, AlertCircle,
+  Code2, Heart
 } from 'lucide-react';
 
 const DOMAIN_COLORS = {
@@ -38,11 +39,12 @@ const QuestLog = () => {
   const [isResetting, setIsResetting] = useState(false);
 
   const {
-    dailyQuests, todayCompletions, questClusters,
-    isLoading, isGeneratingClusters, clustersGeneratedAt, clustersApproved,
-    addDailyQuest, completeDaily, deleteDailyQuest,
-    loadQuests, loadDailyQuests, loadQuestClusters, generateQuestClusters, approveCluster,
-    approveAllClusters
+    dailyQuests, todayCompletions,
+    isLoading, addDailyQuest, completeDaily, deleteDailyQuest,
+    loadDailyQuests,
+    studyQuests, lifeQuests, isGeneratingStudy,
+    isGeneratingLife, studyGenerated, lifeGenerated,
+    generateStudyQuests, generateLifeQuests
   } = useQuestStore();
 
   const { level, streakDays } = useXpStore();
@@ -51,24 +53,8 @@ const QuestLog = () => {
   const { balance } = useWalletStore();
 
   useEffect(() => {
-    loadQuestClusters();
     loadDailyQuests(true); // Always force-refresh on mount
   }, []);
-
-
-  const handleGenerateClusters = async () => {
-    const contextData = {
-      level,
-      streak: streakDays,
-      dsaSolved: dsaSolved || 0,
-      chaptersCompleted: chapters?.filter(c => c.completed)?.length || 0,
-      lastHealthScore: history?.[0]?.day_score || 0,
-      gymDone: todayLog?.gym_done || false,
-      completedToday: todayCompletions?.length || 0,
-      wallet: Math.floor((balance || 0) / 100)
-    };
-    await generateQuestClusters(contextData);
-  };
 
   const handleResetDailyQuests = async () => {
     if (!window.confirm(
@@ -84,7 +70,6 @@ const QuestLog = () => {
         .update({ approved: false, approved_at: null })
         .eq('cluster_date', today)
       await loadDailyQuests(true)
-      await loadQuestClusters()
       setActiveTab('clusters')
       const { triggerJarvisToast } = await import('../components/JarvisToast')
       triggerJarvisToast({ type: 'success', title: 'RESET', message: 'Re-approve clusters now.', duration: 3000 })
@@ -92,7 +77,7 @@ const QuestLog = () => {
       console.error('Reset error:', err)
     }
     setIsResetting(false)
-  }
+  };
 
   const completedCount = todayCompletions?.length || 0;
   const totalDaily = dailyQuests?.length || 0;
@@ -100,11 +85,8 @@ const QuestLog = () => {
     ? Math.floor((completedCount / totalDaily) * 100) : 0;
   const domains = ['All','SDE','Trading','Health',
     'Exam','Finance','General','Explorer'];
-  const todayStr = new Date().toISOString().split('T')[0];
-  const clustersAreToday = clustersGeneratedAt
-    ?.startsWith(todayStr);
 
-  if (isLoading && !questClusters?.length) {
+  if (isLoading) {
     return (
       <div className="flex-1 p-6 space-y-4">
         <div className="h-6 bg-[#E5E0D8] animate-pulse rounded w-1/3 mb-8" />
@@ -139,18 +121,6 @@ const QuestLog = () => {
           </p>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={handleGenerateClusters}
-            disabled={isGeneratingClusters}
-            className="flex items-center gap-2 bg-[#E07B39] text-white
-              px-4 py-2.5 rounded-xl text-xs font-bold font-['Space_Mono']
-              uppercase tracking-wider hover:opacity-90 transition-all
-              disabled:opacity-50"
-          >
-            <Bot size={13} className={isGeneratingClusters
-              ? 'animate-spin' : ''}/>
-            {isGeneratingClusters ? 'Generating...' : 'JARVIS Missions'}
-          </button>
           <button
             onClick={() => setShowAddForm(!showAddForm)}
             className="flex items-center gap-2 bg-[#1A1A2E] text-white
@@ -320,7 +290,7 @@ const QuestLog = () => {
       <div className="flex items-center gap-1 bg-white rounded-xl
         border border-[#E5E0D8] p-1 w-fit mb-5 overflow-x-auto">
         {[
-          { id: 'clusters', label: `Clusters (${questClusters.length})` },
+          { id: 'clusters', label: 'Clusters' },
           { id: 'daily', label: `Active (${totalDaily})` },
           { id: 'completed', label: `Done (${completedCount})` }
         ].map(tab => (
@@ -343,242 +313,263 @@ const QuestLog = () => {
       {activeTab === 'clusters' && (
         <div className="flex flex-col gap-4">
 
-          {/* Empty state */}
-          {questClusters.length === 0 && !isGeneratingClusters && (
-            <div className="text-center py-16">
-              <div className="w-16 h-16 bg-white rounded-2xl border
-                border-[#E5E0D8] flex items-center justify-center
-                mx-auto mb-4">
-                <Bot size={28} className="text-[#E07B39]"/>
-              </div>
-              <p className="text-sm font-bold text-[#1A1A2E]
-                font-['Inter'] mb-2">
-                No missions generated yet
-              </p>
-              <p className="text-xs text-[#9A9590] font-['Inter'] mb-6
-                max-w-sm mx-auto">
-                Hit "JARVIS Missions" — JARVIS will analyze your progress
-                and generate personalized quest clusters for today.
-              </p>
-              <button
-                onClick={handleGenerateClusters}
-                disabled={isGeneratingClusters}
-                className="bg-[#E07B39] text-white px-8 py-3 rounded-xl
-                  font-bold font-['Space_Mono'] uppercase tracking-wider
-                  hover:opacity-90 transition-all flex items-center gap-2
-                  mx-auto"
-              >
-                <Bot size={14}/>
-                Generate Today's Missions
-              </button>
-            </div>
-          )}
-
-          {/* Generating state */}
-          {isGeneratingClusters && (
-            <div className="text-center py-12">
-              <div className="w-12 h-12 bg-[#1A1A2E] rounded-2xl
-                flex items-center justify-center mx-auto mb-4 animate-pulse">
-                <Bot size={22} className="text-[#E07B39]"/>
-              </div>
-              <p className="text-sm font-bold text-[#1A1A2E]
-                font-['Space_Mono'] uppercase tracking-wider mb-1">
-                Analyzing your progress...
-              </p>
-              <p className="text-xs text-[#9A9590] font-['Inter']">
-                JARVIS is building personalized missions for you
-              </p>
-            </div>
-          )}
-
-          {/* Approve All button */}
-          {questClusters.length > 0 && !clustersApproved && (
-            <div className="bg-[#1A1A2E] rounded-2xl p-4 flex items-center
-              justify-between gap-4">
+          {/* CLUSTER 1 — STUDY */}
+          <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+            <div className="flex items-center justify-between mb-4">
               <div>
-                <p className="text-xs font-bold text-white
-                  font-['Space_Mono'] uppercase tracking-wider">
-                  {questClusters.filter(c => !c.approved).length} clusters ready
-                </p>
-                <p className="text-[10px] text-white/50 font-['Inter'] mt-0.5">
-                  Approve clusters to add quests to your daily list
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-2 h-2 rounded-full bg-[#1A1A2E]"/>
+                  <p className="text-[10px] font-bold text-[#9A9590]
+                    font-['Space_Mono'] uppercase tracking-widest">
+                    Study Cluster
+                  </p>
+                </div>
+                <p className="text-sm font-bold text-[#1A1A2E] 
+                  font-['Inter']">
+                  SDE · AI Track · Explorer
                 </p>
               </div>
               <button
-                onClick={async () => {
-                  await approveAllClusters()
-                  setActiveTab('daily') // Auto-switch to Active tab
-                }}
-                className="flex items-center gap-2 bg-[#E07B39] text-white
-                  px-4 py-2 rounded-xl text-xs font-bold font-['Space_Mono']
-                  uppercase tracking-wider hover:opacity-90 transition-all
-                  whitespace-nowrap"
+                onClick={generateStudyQuests}
+                disabled={isGeneratingStudy}
+                className={clsx(
+                  'px-4 py-2 rounded-xl text-xs font-bold',
+                  'font-["Space_Mono"] uppercase tracking-wider',
+                  'transition-all disabled:opacity-50',
+                  studyGenerated 
+                    ? 'bg-[#F5F4F0] text-[#9A9590]'
+                    : 'bg-[#1A1A2E] text-white'
+                )}
               >
-                <Check size={12}/>
-                Approve All
+                {isGeneratingStudy 
+                  ? 'Generating...' 
+                  : studyGenerated 
+                    ? 'Regenerate' 
+                    : 'Generate Study Quests'}
               </button>
             </div>
-          )}
 
-          {/* Cluster cards */}
-          {questClusters.map((cluster, ci) => {
-            const clusterQuests = cluster.quests || []
-            const totalXp = cluster.total_xp ||
-              clusterQuests.reduce((s, q) => s + (q.xp_reward || 0), 0)
-            const isApproved = cluster.approved
-
-            return (
-              <motion.div
-                key={cluster.id}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: ci * 0.06 }}
-                className={clsx(
-                  'bg-white rounded-2xl border overflow-hidden transition-all',
-                  isApproved
-                    ? 'border-[#1A6B4A]/30'
-                    : 'border-[#E5E0D8] hover:shadow-sm'
-                )}
-              >
-                {/* Cluster header */}
-                <div className="p-4 flex items-center justify-between gap-3"
-                  style={{
-                    borderLeft: `4px solid ${clusterQuests[0]?.color || '#1A1A2E'}`
-                  }}
-                >
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div
-                      className="w-10 h-10 rounded-xl flex items-center 
-                        justify-center shrink-0"
-                      style={{ 
-                        backgroundColor: (DOMAIN_COLORS[cluster.domain?.toLowerCase()] 
-                          || '#9A9590') + '20'
-                      }}
+            {/* Study quests list */}
+            {studyQuests.length > 0 ? (
+              <div className="space-y-2">
+                {studyQuests.map(quest => {
+                  const done = todayCompletions?.some(
+                    c => c.quest_id === quest.id
+                  )
+                  return (
+                    <div key={quest.id}
+                      className={clsx(
+                        'flex items-start gap-3 p-3 rounded-xl border',
+                        'transition-all',
+                        done 
+                          ? 'border-[#1A6B4A]/20 bg-[#F0FDF4]'
+                          : 'border-[#E5E0D8] hover:border-[#1A1A2E]'
+                      )}
                     >
-                      <div
-                        className="w-3 h-3 rounded-full"
-                        style={{ 
-                          backgroundColor: DOMAIN_COLORS[cluster.domain?.toLowerCase()] 
-                            || '#9A9590' 
-                        }}
-                      />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <p className="text-sm font-bold text-[#1A1A2E]
-                          font-['Inter']">
-                          {cluster.cluster_name}
-                        </p>
-                        <span className="text-[9px] font-bold
-                          font-['Space_Mono'] uppercase px-2 py-0.5
-                          rounded-full bg-[#F5F4F0] text-[#9A9590]">
-                          {cluster.domain}
-                        </span>
-                        {isApproved && (
-                          <span className="text-[9px] font-bold
-                            font-['Space_Mono'] uppercase px-2 py-0.5
-                            rounded-full bg-emerald-50 text-emerald-700">
-                            Active
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-[10px] text-[#9A9590] font-['Inter']
-                        truncate">
-                        {cluster.theme}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-[10px] font-bold
-                      text-[#1A6B4A] font-['Space_Mono']">
-                      +{totalXp} XP
-                    </span>
-                    {!isApproved && (
                       <button
-                        onClick={async () => {
-                          setApprovingId(cluster.id)
-                          await approveCluster(cluster.id)
-                          setApprovingId(null)
-                          setActiveTab('daily') // Auto-switch to Active tab
-                        }}
-
-                        disabled={approvingId === cluster.id}
-                        className="flex items-center gap-1.5 bg-[#1A1A2E]
-                          text-white px-3 py-1.5 rounded-lg text-[10px]
-                          font-bold font-['Space_Mono'] uppercase tracking-wider
-                          hover:bg-[#2a2a4e] transition-all disabled:opacity-50"
+                        onClick={() => !done && completeDaily(quest.id)}
+                        disabled={done}
+                        className={clsx(
+                          'w-5 h-5 rounded border-2 flex items-center',
+                          'justify-center shrink-0 mt-0.5 transition-all',
+                          done
+                            ? 'bg-[#1A6B4A] border-[#1A6B4A]'
+                            : 'border-[#E5E0D8] bg-white hover:border-[#1A1A2E]'
+                        )}
                       >
-                        {approvingId === cluster.id
-                          ? '...'
-                          : <><Check size={10}/> Add</>
-                        }
+                        {done && (
+                          <Check size={11} className="text-white" 
+                            strokeWidth={3}/>
+                        )}
                       </button>
-
-                    )}
-                  </div>
-                </div>
-
-                {/* Why today */}
-                {clusterQuests[0]?.why_today && (
-                  <div className="px-4 py-2 bg-[#FFF0E6] border-t
-                    border-[#E5E0D8]">
-                    <p className="text-[10px] text-[#E07B39] font-['Inter']
-                      font-medium">
-                      <Zap size={12} className="text-[#E07B39] shrink-0"/> {clusterQuests[0].why_today}
-                    </p>
-                  </div>
-                )}
-
-                {/* Quest list inside cluster */}
-                <div className="border-t border-[#F5F4F0]">
-                  {clusterQuests.map((q, qi) => (
-                    <div key={qi}
-                      className="flex items-start gap-3 px-4 py-3
-                        border-b border-[#F5F4F0] last:border-0"
-                    >
-                      <div className="w-1.5 h-1.5 rounded-full mt-2
-                        shrink-0 bg-[#E5E0D8]"/>
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm font-bold text-[#1A1A2E]
+                        <div className="flex items-center gap-2 mb-0.5 
+                          flex-wrap">
+                          <p className={clsx(
+                            'text-sm font-bold font-["Inter"]',
+                            done ? 'text-[#9A9590] line-through' 
+                              : 'text-[#1A1A2E]'
+                          )}>
+                            {quest.title || quest.name || 'Quest'}
+                          </p>
+                          <span className="text-[8px] font-bold 
+                            font-['Space_Mono'] uppercase px-1.5 py-0.5
+                            rounded-full bg-[#1A1A2E]/10 text-[#1A1A2E]
+                            shrink-0">
+                            {quest.domain}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-[#9A9590] 
                           font-['Inter']">
-                          {q.title || q.name || 'Unnamed Quest'}
+                          {quest.description}
                         </p>
-                        {q.description && (
-                          <p className="text-[10px] text-[#9A9590]
-                            font-['Inter'] mt-0.5 leading-relaxed">
-                            {q.description}
+                        {quest.why_today && (
+                          <p className="text-[9px] text-[#E07B39]
+                            font-['Space_Mono'] uppercase tracking-wider mt-1">
+                            → {quest.why_today}
                           </p>
                         )}
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        {q.time_estimate && (
-                          <span className="text-[9px] text-[#9A9590]
+                      <div className="shrink-0 text-right">
+                        <p className="text-[10px] font-bold text-[#E07B39]
+                          font-['Space_Mono']">
+                          +{quest.xp_reward}
+                        </p>
+                        {quest.estimated_minutes && (
+                          <p className="text-[9px] text-[#9A9590]
                             font-['Space_Mono']">
-                            {q.time_estimate}
-                          </span>
+                            {quest.estimated_minutes}m
+                          </p>
                         )}
-                        <span className={clsx(
-                          'text-[9px] font-bold font-["Space_Mono"]',
-                          'uppercase px-1.5 py-0.5 rounded',
-                          q.difficulty === 'Hard'
-                            ? 'bg-red-50 text-red-600'
-                            : q.difficulty === 'Medium'
-                            ? 'bg-yellow-50 text-yellow-600'
-                            : 'bg-green-50 text-green-600'
-                        )}>
-                          {q.difficulty}
-                        </span>
-                        <span className="text-[10px] font-bold
-                          text-[#1A6B4A] font-['Space_Mono']">
-                          +{q.xp_reward}
-                        </span>
                       </div>
                     </div>
-                  ))}
+                  )
+                })}
+              </div>
+            ) : !isGeneratingStudy ? (
+              <div className="text-center py-8">
+                <Code2 size={28} className="text-[#E5E0D8] mx-auto mb-2"/>
+                <p className="text-xs text-[#9A9590] font-['Inter']">
+                  Generate your study quests for today
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {[1,2,3,4,5].map(i => (
+                  <div key={i} className="h-16 bg-[#F5F4F0] rounded-xl 
+                    animate-pulse"/>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* CLUSTER 2 — LIFE */}
+          <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-2 h-2 rounded-full bg-[#E07B39]"/>
+                  <p className="text-[10px] font-bold text-[#9A9590]
+                    font-['Space_Mono'] uppercase tracking-widest">
+                    Life Cluster
+                  </p>
                 </div>
-              </motion.div>
-            )
-          })}
+                <p className="text-sm font-bold text-[#1A1A2E] 
+                  font-['Inter']">
+                  Health · Trading · Habits · Finance
+                </p>
+              </div>
+              <button
+                onClick={generateLifeQuests}
+                disabled={isGeneratingLife}
+                className={clsx(
+                  'px-4 py-2 rounded-xl text-xs font-bold',
+                  'font-["Space_Mono"] uppercase tracking-wider',
+                  'transition-all disabled:opacity-50',
+                  lifeGenerated 
+                    ? 'bg-[#F5F4F0] text-[#9A9590]'
+                    : 'bg-[#E07B39] text-white'
+                )}
+              >
+                {isGeneratingLife 
+                  ? 'Generating...' 
+                  : lifeGenerated 
+                    ? 'Regenerate' 
+                    : 'Generate Life Quests'}
+              </button>
+            </div>
+
+            {/* Life quests list */}
+            {lifeQuests.length > 0 ? (
+              <div className="space-y-2">
+                {lifeQuests.map(quest => {
+                  const done = todayCompletions?.some(
+                    c => c.quest_id === quest.id
+                  )
+                  return (
+                    <div key={quest.id}
+                      className={clsx(
+                        'flex items-start gap-3 p-3 rounded-xl border',
+                        'transition-all',
+                        done 
+                          ? 'border-[#1A6B4A]/20 bg-[#F0FDF4]'
+                          : 'border-[#E5E0D8] hover:border-[#E07B39]'
+                      )}
+                    >
+                      <button
+                        onClick={() => !done && completeDaily(quest.id)}
+                        disabled={done}
+                        className={clsx(
+                          'w-5 h-5 rounded border-2 flex items-center',
+                          'justify-center shrink-0 mt-0.5 transition-all',
+                          done
+                            ? 'bg-[#1A6B4A] border-[#1A6B4A]'
+                            : 'border-[#E5E0D8] bg-white hover:border-[#E07B39]'
+                        )}
+                      >
+                        {done && <Check size={11} className="text-white" 
+                          strokeWidth={3}/>}
+                      </button>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5 
+                          flex-wrap">
+                          <p className={clsx(
+                            'text-sm font-bold font-["Inter"]',
+                            done ? 'text-[#9A9590] line-through' 
+                              : 'text-[#1A1A2E]'
+                          )}>
+                            {quest.title || quest.name || 'Quest'}
+                          </p>
+                          <span className="text-[8px] font-bold 
+                            font-['Space_Mono'] uppercase px-1.5 py-0.5
+                            rounded-full bg-[#E07B39]/10 text-[#E07B39]
+                            shrink-0">
+                            {quest.domain}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-[#9A9590] 
+                          font-['Inter']">
+                          {quest.description}
+                        </p>
+                        {quest.why_today && (
+                          <p className="text-[9px] text-[#E07B39]
+                            font-['Space_Mono'] uppercase tracking-wider mt-1">
+                            → {quest.why_today}
+                          </p>
+                        )}
+                      </div>
+                      <div className="shrink-0 text-right">
+                        <p className="text-[10px] font-bold text-[#E07B39]
+                          font-['Space_Mono']">
+                          +{quest.xp_reward}
+                        </p>
+                        {quest.estimated_minutes && (
+                          <p className="text-[9px] text-[#9A9590]
+                            font-['Space_Mono']">
+                            {quest.estimated_minutes}m
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : !isGeneratingLife ? (
+              <div className="text-center py-8">
+                <Heart size={28} className="text-[#E5E0D8] mx-auto mb-2"/>
+                <p className="text-xs text-[#9A9590] font-['Inter']">
+                  Generate your life quests for today
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {[1,2,3,4,5,6].map(i => (
+                  <div key={i} className="h-16 bg-[#F5F4F0] rounded-xl 
+                    animate-pulse"/>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

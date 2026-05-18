@@ -4,6 +4,166 @@ import { supabase } from '../lib/supabase';
 import { callGroq } from '../lib/groq';
 import { saveExplorerMemory, loadMemories, MEMORY_TYPES } from '../lib/globalMemory'
 
+export const EXPLORER_DOMAINS = {
+  Psychology: {
+    beginner: [
+      'How Memory Works — Encoding, Storage, Retrieval',
+      'Cognitive Biases — Why Your Brain Lies to You',
+      'Motivation Science — Intrinsic vs Extrinsic Drivers',
+      'Habit Formation — The Loop and How to Break It',
+      'Decision Fatigue — Why Willpower Depletes'
+    ],
+    intermediate: [
+      'Neuroplasticity — How the Brain Physically Changes',
+      'Flow State — The Science of Peak Performance',
+      'Emotional Regulation — The Prefrontal-Amygdala Dance',
+      'Social Psychology — Conformity, Authority, and Groupthink',
+      'Personality Science — Beyond MBTI'
+    ],
+    advanced: [
+      'Psychotherapy Models — CBT, DBT, ACT Compared',
+      'Attachment Theory — Childhood Patterns in Adult Behavior',
+      'Consciousness — What Science Actually Knows',
+      'The Self — Is There a Fixed Identity?'
+    ]
+  },
+  Neuroscience: {
+    beginner: [
+      'How Neurons Work — Action Potentials Explained Simply',
+      'The Brain Atlas — What Each Region Actually Does',
+      'Sleep Science — What Happens While You Sleep',
+      'Dopamine — Beyond the Pleasure Myth',
+      'Stress Response — Cortisol, HPA Axis, Fight-or-Flight'
+    ],
+    intermediate: [
+      'Learning and LTP — How Memories Form at the Synapse',
+      'Default Mode Network — When the Brain Does Nothing',
+      'Neurochemistry of Depression — Beyond Serotonin',
+      'Mirror Neurons — Empathy and Social Cognition',
+      'The Gut-Brain Axis — Your Second Brain'
+    ],
+    advanced: [
+      'Connectomics — Mapping Every Neural Connection',
+      'Brain Stimulation — TMS, tDCS, Deep Brain Stimulation',
+      'Neural Decoding — Reading Thoughts from Brain Activity',
+      'Consciousness and the Hard Problem'
+    ]
+  },
+  'Cognitive Science': {
+    beginner: [
+      'What is Cognition — Thinking About Thinking',
+      'Attention — Limited Resource or Dynamic Filter',
+      'Working Memory — Your Mental Scratchpad',
+      'Language and Thought — Does Vocabulary Limit Ideas',
+      'Mental Models — How Experts Think Differently'
+    ],
+    intermediate: [
+      'Dual Process Theory — System 1 and System 2',
+      'Embodied Cognition — How Your Body Shapes Your Thoughts',
+      'Expertise Science — 10,000 Hours and Its Nuances',
+      'Analogical Reasoning — The Engine of Creativity',
+      'Metacognition — Thinking About Your Own Thinking'
+    ],
+    advanced: [
+      'Predictive Processing — The Brain as Prediction Machine',
+      'Extended Mind Theory — Are Your Tools Part of Your Mind',
+      'Cognitive Load Theory — Implications for Learning Design'
+    ]
+  },
+  Geopolitics: {
+    beginner: [
+      'Power Transition Theory — Why Rising Powers Create Conflict',
+      'Geopolitics of Oil — Why Energy Shapes Foreign Policy',
+      'The Nation-State System — Westphalia to Today',
+      'India-China — The Great Game in Asia',
+      'US Dollar Hegemony — Why It Matters to Everyone'
+    ],
+    intermediate: [
+      'Belt and Road Initiative — China\'s Grand Strategy Decoded',
+      'Russia-NATO — The Architecture of European Security',
+      'Middle East — Oil, Religion, and the Post-Cold War Order',
+      'Africa in the 21st Century — The New Scramble',
+      'Technology and Power — Semiconductors as Geopolitical Weapons'
+    ],
+    advanced: [
+      'Multipolar World — What Happens After US Hegemony',
+      'Economic Warfare — Sanctions, Tariffs, and Currency Wars',
+      'Climate Geopolitics — How Warming Reshapes Power'
+    ]
+  },
+  AI: {
+    beginner: [
+      'Transformers Revisited — Attention Is Still All You Need',
+      'LSTMs vs Transformers — When Recurrence Still Wins',
+      'Diffusion Models — How Images Are Generated Mathematically',
+      'Reinforcement Learning From Human Feedback — How ChatGPT Was Trained',
+      'Embeddings — Why Meaning Lives in Geometry'
+    ],
+    intermediate: [
+      'Mixture of Experts — How GPT-4 Actually Scales',
+      'State Space Models — Mamba and the Attention Alternative',
+      'AI in Drug Discovery — AlphaFold and Beyond',
+      'Multimodal Grounding — How Vision-Language Models Really Work',
+      'AI Safety Evals — How Frontier Labs Test for Catastrophic Risk',
+      'Neural Architecture Search — Teaching AI to Design AI',
+      'Mechanistic Interpretability — Reading Circuits Inside GPT'
+    ],
+    advanced: [
+      'Quantum Machine Learning — Where Quantum Tunneling Meets Inference',
+      'AI in Defense — Autonomous Targeting, Pilot Biometrics, Lethal Autonomy',
+      'Neuromorphic Computing — Intel Loihi and Brain-Inspired Chips',
+      'Test-Time Compute — Why Thinking Longer Changes Everything',
+      'Post-Training Methods — RLHF, DPO, GRPO Compared',
+      'Frontier Model Capabilities — Latest Benchmarks and Emergent Behaviors'
+    ]
+  },
+  'AI × Fields': {
+    beginner: [
+      'AI in Neuroscience — Brain Decoding and Neural Prosthetics',
+      'AI in Psychology — Therapy Bots, Diagnostic Models, Mental Health Tech',
+      'AI in Geopolitics — Surveillance States, Drone Wars, Information Ops',
+      'AI in Medicine — From Radiology to Pandemic Prediction',
+      'AI in Education — Personalized Learning and the Tutoring Revolution'
+    ],
+    intermediate: [
+      'BCI + AI — Neuralink, BrainGate, and Thought-to-Text',
+      'AI-Detected Heartbeat Anomalies — The US Pilot Study and Implications',
+      'Computational Psychiatry — Modeling Mental Illness with AI',
+      'AI and Nuclear Security — Verification, Early Warning, Escalation Risk',
+      'AI in Climate Science — Weather Forecasting to Geoengineering Models'
+    ],
+    advanced: [
+      'AI Forecasting in Intelligence — CIA, DARPA, and Prediction Markets',
+      'Cognitive Modeling — AI as Theory of Mind',
+      'AI and Consciousness — Can a Model Be Sentient',
+      'Whole Brain Emulation — The Convergence of Neuroscience and AI'
+    ]
+  }
+};
+
+export function getNextTopicSuggestion(currentDomain, topicArchive, knowledgeDepth) {
+  if (!currentDomain || !EXPLORER_DOMAINS[currentDomain]) return null;
+  
+  const allStudied = (topicArchive || [])
+    .map(t => t.topic_data?.title?.toLowerCase() || '');
+  
+  const domainTopics = Object.entries(
+    EXPLORER_DOMAINS[currentDomain]
+  ).flatMap(([level, topics]) => 
+    topics.map(t => ({ title: t, level }))
+  );
+  
+  const unstudied = domainTopics.filter(t => 
+    !allStudied.some(s => s.includes(t.title.toLowerCase().slice(0, 20)))
+  );
+  
+  const beginner = unstudied.filter(t => t.level === 'beginner');
+  const intermediate = unstudied.filter(t => t.level === 'intermediate');
+  const advanced = unstudied.filter(t => t.level === 'advanced');
+  
+  return beginner[0] || intermediate[0] || advanced[0] || null;
+}
+
 const groqFetch = async (prompt) => {
   const result = await callGroq({
     messages: [{ role: 'user', content: prompt }],
@@ -293,7 +453,6 @@ export const useExplorerStore = create((set, get) => ({
     set({ isGeneratingConnections: false })
   },
 
-  // ── GENERATE NEW TOPIC ──
   generateWeeklyTopic: async () => {
     set({ isGenerating: true });
 
@@ -311,7 +470,24 @@ export const useExplorerStore = create((set, get) => ({
     }
 
     try {
-      let pastTopics = ''
+      const { topicArchive, knowledgeDepth } = get();
+
+      // Find which domain has lowest depth score
+      const domainScores = Object.keys(EXPLORER_DOMAINS).map(d => ({
+        domain: d,
+        score: knowledgeDepth?.find(
+          k => k.domain.toLowerCase() === d.toLowerCase()
+        )?.depth_score || 0
+      }));
+
+      const lowestDomain = domainScores
+        .sort((a, b) => a.score - b.score)[0]?.domain;
+
+      const suggestedNext = getNextTopicSuggestion(
+        lowestDomain, topicArchive, knowledgeDepth
+      );
+
+      let pastTopics = '';
       try {
         const explorerMemory = await loadMemories(MEMORY_TYPES.EXPLORER, 8)
         pastTopics = explorerMemory.map(m => m.content).join('\n- ')
@@ -393,7 +569,17 @@ Generate exactly 5 concepts that build on each other (concept 1 is foundation, c
       Generate a topic that CONNECTS TO or BUILDS ON past topics.
       Don't repeat domains already heavily covered.
       Find unexpected connections between past topics.
-      ` : ''}`;
+      ` : ''}
+      
+      ${suggestedNext ? `
+LEARNING PATH GUIDANCE:
+The lowest-depth domain is: ${lowestDomain}
+Suggested next topic on the path: "${suggestedNext.title}" 
+  (${suggestedNext.level} level)
+
+Strongly consider generating this or a closely related topic.
+The goal is gradual progression — beginner → intermediate → advanced.
+` : ''}`;
 
       const raw = await groqFetch(prompt);
       if (!raw) {

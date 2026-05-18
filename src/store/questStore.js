@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
+import { SDE_TRACK_DATA } from '../lib/sdeTrackData';
+import { getTodayIST } from '../lib/dateUtils';
 import { completeQuest, completeBossTask, getBossStatus, checkWeeklyBonus } from '../lib/questEngine';
 import { triggerJarvisToast } from '../components/JarvisToast';
 import { getJarvisLine } from '../lib/jarvisReactions';
@@ -28,6 +30,12 @@ export const useQuestStore = create((set, get) => ({
   lastDailiesLoaded: null,
   weeklyCompletionRate: 0,
   domainCompletionMap: {},
+  studyQuests: [],
+  lifeQuests: [],
+  isGeneratingStudy: false,
+  isGeneratingLife: false,
+  studyGenerated: false,
+  lifeGenerated: false,
 
   loadQuests: async (force = false) => {
     if (!force && get().lastLoaded && Date.now() - get().lastLoaded < 120000) return;
@@ -295,7 +303,7 @@ export const useQuestStore = create((set, get) => ({
     try {
       const { data, error } = await supabase
         .from('daily_quests')
-        .insert([{ ...quest, is_active: true }])
+        .insert([{ ...quest, quest_text: quest.quest_text || quest.title, is_active: true }])
         .select()
         .single();
       
@@ -737,7 +745,287 @@ export const useQuestStore = create((set, get) => ({
       set({ isGeneratingClusters: false })
       triggerJarvisToast({ type: 'error', title: 'SYSTEM ERROR', message: 'Mission activation failed.' })
     }
+  },
+
+  generateStudyQuests: async () => {
+    set({ isGeneratingStudy: true })
+    try {
+      const { callGroq } = await import('../lib/groq')
+      const { loadMemories, MEMORY_TYPES } = 
+        await import('../lib/globalMemory')
+      
+      // Fetch current progress for context
+      const { data: aiTrackProgress } = await supabase
+        .from('ai_track_progress')
+        .select('topic_id, phase1_done, phase2_done')
+        .limit(20)
+      
+      const { data: sdeProgress } = await supabase
+        .from('sde_progress')
+        .select('topic_id, topic_title, completed, completed_at')
+        .eq('completed', true)
+        .order('completed_at', { ascending: false })
+        .limit(10)
+      
+      const lastCompletedProblem = sdeProgress?.[0]
+      let currentStriverStep = 'Step 1 — Learn the Basics'
+      if (lastCompletedProblem?.topic_id) {
+        const parts = lastCompletedProblem.topic_id.split('-')
+        const stepId = parts[0]
+        const dsaPhase = SDE_TRACK_DATA.phases.find(p => p.id === 'DSA')
+        const matchingSection = dsaPhase?.sections?.find(s => s.id === stepId)
+        if (matchingSection) {
+          currentStriverStep = matchingSection.name
+        }
+      }
+      
+      const { data: playerState } = await supabase
+        .from('player_state')
+        .select('dsa_solved')
+        .single()
+      
+      const { data: explorerTopic } = await supabase
+        .from('explorer_topics')
+        .select('topic_data, concepts')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single()
+      
+      const studyMemory = await loadMemories(
+        MEMORY_TYPES.SDE, 5
+      )
+      const aiMemory = await loadMemories(
+        MEMORY_TYPES.AI_TRACK, 5
+      )
+      
+      const dsaSolved = playerState?.dsa_solved || 0
+      const recentSdeTopic = lastCompletedProblem?.topic_title || ''
+      const explorerTopicTitle = explorerTopic?.topic_data?.title || ''
+      
+      const phase1Done = (aiTrackProgress || [])
+        .filter(t => t.phase1_done).length
+      const phase2Done = (aiTrackProgress || [])
+        .filter(t => t.phase2_done).length
+
+      const memContext = [
+        ...studyMemory.map(m => m.content),
+        ...aiMemory.map(m => m.content)
+      ].join('\n- ')
+
+      const result = await callGroq({
+        messages: [{
+          role: 'user',
+          content: `Generate 5 study-focused daily quests for Abhishek.
+
+RULES — STRICTLY ENFORCE:
+- ONLY from these 3 domains: SDE Track, AI Track, Explorer
+- NO health, habits, hygiene, gym, finance quests
+- Each quest must be specific and actionable (not vague)
+- Build on current progress — don't repeat done work
+
+CURRENT PROGRESS:
+- DSA: ${dsaSolved}/474 problems solved (Striver A2Z)
+- Current Striver step: ${currentStriverStep} (most recent active step)
+- Last SDE topic: ${recentSdeTopic || 'Starting DSA'}
+- AI Track: ${phase1Done} explored, ${phase2Done} studied
+- Current Explorer topic: "${explorerTopicTitle}"
+
+RECENT HISTORY:
+${memContext ? `- ${memContext}` : 'No history yet — generate starter quests'}
+
+Return ONLY valid JSON array, no markdown:
+[
+  {
+    "title": "specific actionable task title",
+    "description": "what exactly to do, with numbers or specifics",
+    "xp_reward": 75,
+    "domain": "sde",
+    "difficulty": "Medium",
+    "estimated_minutes": 45,
+    "cluster_type": "study",
+    "why_today": "one sentence — why this specifically today"
   }
+]
 
+Domain values: "sde" | "ai_track" | "explorer"
+XP values: Easy=50, Medium=75-100, Hard=150-200
+Generate exactly 5 quests — one from each:
+  1. SDE/DSA (Striver A2Z specific step, focus on "${currentStriverStep}")
+  2. AI Track (specific topic exploration or study)
+  3. Explorer (current topic concept to read)
+  4. SDE (Python or Backend if DSA > 250, else DSA)
+  5. AI Track or Explorer (whichever is most behind)`
+        }],
+        max_tokens: 1000,
+        temperature: 0.8
+      })
 
+      if (result.error) {
+        set({ isGeneratingStudy: false })
+        return
+      }
+
+      const clean = result.text.replace(/```json|```/g, '').trim()
+      const quests = JSON.parse(clean)
+
+      // Add to daily_quests table
+      const today = getTodayIST()
+      const inserted = []
+      
+      for (const quest of quests) {
+        const { data, error } = await supabase
+          .from('daily_quests')
+          .insert({
+            title: quest.title,
+            quest_text: quest.title, // Support legacy column name
+            description: quest.description,
+            xp_reward: quest.xp_reward,
+            domain: quest.domain,
+            difficulty: quest.difficulty,
+            is_active: true,
+            source: 'study_cluster'
+          })
+          .select()
+          .single()
+        if (error) console.error('generateStudyQuests insert error:', error)
+        if (data) inserted.push({ ...quest, id: data.id })
+      }
+
+      set(state => ({
+        studyQuests: inserted,
+        isGeneratingStudy: false,
+        studyGenerated: true,
+        dailyQuests: [...state.dailyQuests, ...inserted]
+      }))
+    } catch (err) {
+      console.error('generateStudyQuests error:', err)
+      set({ isGeneratingStudy: false })
+    }
+  },
+
+  generateLifeQuests: async () => {
+    set({ isGeneratingLife: true })
+    try {
+      const { callGroq } = await import('../lib/groq')
+      const { loadMemories, MEMORY_TYPES } = 
+        await import('../lib/globalMemory')
+      
+      // Fetch current health + trading context
+      const today = getTodayIST()
+      const { data: todayHealth } = await supabase
+        .from('health_logs')
+        .select('day_score, gym_done, total_checks')
+        .eq('log_date', today)
+        .single()
+      
+      const { data: recentTrades } = await supabase
+        .from('trades')
+        .select('pnl, rules_followed, pair')
+        .order('date', { ascending: false })
+        .limit(5)
+      
+      const { data: playerState } = await supabase
+        .from('player_state')
+        .select('streak_days, xp, level')
+        .single()
+
+      const lifeMemory = await loadMemories(
+        MEMORY_TYPES.HEALTH, 3
+      )
+      const tradingMemory = await loadMemories(
+        MEMORY_TYPES.TRADING, 3
+      )
+
+      const recentLosses = (recentTrades || [])
+        .filter(t => parseFloat(t.pnl) < 0).length
+      const avgHealth = todayHealth?.day_score || 0
+      const gymDoneToday = todayHealth?.gym_done || false
+
+      const result = await callGroq({
+        messages: [{
+          role: 'user',
+          content: `Generate 6 life and habit quests for Abhishek for today.
+
+RULES — STRICTLY ENFORCE:
+- ONLY from these domains: health, trading, finance, general
+- NO study/coding/AI/DSA quests — those are in a separate cluster
+- Make them specific to current state and time of day
+- Abhishek is vegetarian + eggs, starts gym June 16 2026
+
+CURRENT STATE:
+- Health score today: ${avgHealth}%
+- Gym done today: ${gymDoneToday}
+- Current streak: ${playerState?.streak_days || 0} days
+- Recent trades: ${recentTrades?.length || 0} in last 5 (${recentLosses} losses)
+- Level: ${playerState?.level || 1}, XP: ${playerState?.xp || 0}
+
+RECENT LIFE CONTEXT:
+${lifeMemory.concat(tradingMemory).map(m => `- ${m.content}`).join('\n') || '- No history yet'}
+
+Return ONLY valid JSON array, no markdown:
+[
+  {
+    "title": "specific task title",
+    "description": "what exactly to do",
+    "xp_reward": 50,
+    "domain": "health",
+    "difficulty": "Easy",
+    "estimated_minutes": 20,
+    "cluster_type": "life",
+    "why_today": "one sentence"
+  }
+]
+
+Generate exactly 6 quests in this order:
+  1. Health/gym (pre-gym or gym routine)
+  2. Nutrition (specific meal or protein target)
+  3. Sleep/recovery (evening wind-down)
+  4. Trading (journal review or analysis, NOT a trade signal)
+  5. Finance/money (budget or income milestone review)
+  6. Mindset/environment (clean desk, mindfulness, digital hygiene)`
+        }],
+        max_tokens: 900,
+        temperature: 0.8
+      })
+
+      if (result.error) {
+        set({ isGeneratingLife: false })
+        return
+      }
+
+      const clean = result.text.replace(/```json|```/g, '').trim()
+      const quests = JSON.parse(clean)
+      const todayVal = getTodayIST()
+      const inserted = []
+
+      for (const quest of quests) {
+        const { data, error } = await supabase
+          .from('daily_quests')
+          .insert({
+            title: quest.title,
+            quest_text: quest.title, // Support legacy column name
+            description: quest.description,
+            xp_reward: quest.xp_reward,
+            domain: quest.domain,
+            difficulty: quest.difficulty,
+            is_active: true,
+            source: 'life_cluster'
+          })
+          .select()
+          .single()
+        if (error) console.error('generateLifeQuests insert error:', error)
+        if (data) inserted.push({ ...quest, id: data.id })
+      }
+
+      set(state => ({
+        lifeQuests: inserted,
+        isGeneratingLife: false,
+        lifeGenerated: true,
+        dailyQuests: [...state.dailyQuests, ...inserted]
+      }))
+    } catch (err) {
+      console.error('generateLifeQuests error:', err)
+      set({ isGeneratingLife: false })
+    }
+  }
 }));

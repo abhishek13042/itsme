@@ -9,8 +9,10 @@ import { useWalletStore } from '../store/walletStore';
 import { useHealthStore } from '../store/healthStore';
 import { useSdeStore } from '../store/sdeStore';
 import { useTradingStore } from '../store/tradingStore';
+import { useAiTrackStore, AI_TRACK_DATA } from '../store/aiTrackStore';
+import { SDE_TRACK_DATA, getCurrentPhase, getPhaseProgress } from '../lib/sdeTrackData';
 import { motion, AnimatePresence } from 'framer-motion';
-import { format } from 'date-fns';
+import { format, differenceInDays } from 'date-fns';
 import { clsx } from 'clsx';
 import {
   Zap, Flame, Wallet, TrendingUp, Code2,
@@ -56,7 +58,8 @@ const CommandCenter = () => {
   // === STORE CONNECTIONS ===
   const { xp, level, streakDays } = useXpStore();
   const { todayLog } = useHealthStore();
-  const { chapters, dsaSolved } = useSdeStore();
+  const { chapters, dsaSolved, progress: sdeProgress, loadRoadmap } = useSdeStore();
+  const { progress: aiProgress, currentWeek: aiWeek, loadProgress } = useAiTrackStore();
   const { trades } = useTradingStore();
   const { 
     dailyQuests, todayCompletions, 
@@ -92,6 +95,18 @@ const CommandCenter = () => {
   const healthScore = todayLog?.day_score || 0;
 
   // === PATTERN DETECTION ===
+  const [archiveCount, setArchiveCount] = useState(0)
+
+  useEffect(() => {
+    loadRoadmap();
+    loadProgress();
+    
+    supabase
+      .from('explorer_topics')
+      .select('id', { count: 'exact', head: true })
+      .then(({ count }) => setArchiveCount(count || 0))
+  }, [])
+
   useEffect(() => {
     const loadPatterns = async () => {
       const detected = await detectPatterns(supabase)
@@ -209,6 +224,7 @@ const CommandCenter = () => {
   const getEnergyColor = (v) => v <= 3 ? '#C0392B' : v <= 6 ? '#E07B39' : '#1A6B4A'
 
   const QUICK_NAV = [
+    { label: 'Goals', path: '/goals', icon: Target, color: '#C0392B' },
     { label: 'Explorer', path: '/explorer', icon: Brain, color: '#7C3AED' },
     { label: 'AI Track', path: '/ai-track', icon: Bot, color: '#1A6B4A' },
     { label: 'Quests', path: '/quests', icon: Target, color: '#E07B39' },
@@ -371,6 +387,24 @@ const CommandCenter = () => {
     }
     setFocusLoading(false);
   };
+
+  const sdeCurrentPhase = getCurrentPhase(sdeProgress || {}, dsaSolved)
+  const dsaPercent = Math.min(100, 
+    Math.floor((dsaSolved / 474) * 100))
+  const aiTopics = AI_TRACK_DATA?.clusters?.flatMap(c =>
+    c.sections.flatMap(s => s.topics)
+  ) || []
+  const aiDone = aiTopics.filter(
+    t => aiProgress?.[t.id]?.phase2_done
+  ).length
+  const aiPercent = aiTopics.length 
+    ? Math.floor((aiDone / aiTopics.length) * 100) : 0
+  const startDate = new Date('2026-05-17')
+  const daysElapsed = Math.max(0, 
+    differenceInDays(new Date(), startDate))
+  const daysTotal = 14 * 30
+  const timePercent = Math.min(100, 
+    Math.floor((daysElapsed / daysTotal) * 100))
 
   return (
     <div className="min-h-screen bg-[#F5F4F0] p-4 lg:p-6 pb-24 lg:pb-6">
@@ -552,6 +586,134 @@ const CommandCenter = () => {
 
       </div>
 
+      {/* ── MASTER TIMELINE ── */}
+      <div className="bg-white rounded-2xl border border-[#E5E0D8]
+        p-5 mb-4">
+        <p className="text-[10px] font-bold text-[#9A9590]
+          font-['Space_Mono'] uppercase tracking-widest mb-4">
+          Where You Are
+        </p>
+
+        {/* Overall time bar */}
+        <div className="mb-4">
+          <div className="flex justify-between mb-1.5">
+            <p className="text-[9px] text-[#9A9590] 
+              font-['Space_Mono'] uppercase tracking-wider">
+              14-Month Journey · Day {daysElapsed}
+            </p>
+            <p className="text-[9px] font-bold text-[#1A1A2E]
+              font-['Space_Mono']">
+              {timePercent}% elapsed
+            </p>
+          </div>
+          <div className="h-1.5 bg-[#F5F4F0] rounded-full 
+            overflow-hidden">
+            <motion.div
+              initial={{ width: 0 }}
+              animate={{ width: `${timePercent}%` }}
+              className="h-full bg-[#1A1A2E] rounded-full"
+              transition={{ duration: 0.8 }}
+            />
+          </div>
+        </div>
+
+        {/* 3 track progress rows */}
+        <div className="space-y-3">
+          {/* SDE Track */}
+          <div className="flex items-center gap-3">
+            <div className="w-16 shrink-0">
+              <p className="text-[9px] font-bold text-[#9A9590]
+                font-['Space_Mono'] uppercase tracking-wider">
+                SDE
+              </p>
+            </div>
+            <div className="flex-1 h-2 bg-[#F5F4F0] rounded-full 
+              overflow-hidden">
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${dsaPercent}%` }}
+                className="h-full rounded-full bg-[#1A1A2E]"
+                transition={{ duration: 0.8, delay: 0.1 }}
+              />
+            </div>
+            <div className="flex items-center gap-1 shrink-0 w-20
+              justify-end">
+              <p className="text-[9px] font-bold text-[#1A1A2E]
+                font-['Space_Mono']">
+                {dsaSolved}/474 DSA
+              </p>
+            </div>
+          </div>
+
+          {/* AI Track */}
+          <div className="flex items-center gap-3">
+            <div className="w-16 shrink-0">
+              <p className="text-[9px] font-bold text-[#9A9590]
+                font-['Space_Mono'] uppercase tracking-wider">
+                AI Eng
+              </p>
+            </div>
+            <div className="flex-1 h-2 bg-[#F5F4F0] rounded-full 
+              overflow-hidden">
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${aiPercent}%` }}
+                className="h-full rounded-full bg-[#1A6B4A]"
+                transition={{ duration: 0.8, delay: 0.2 }}
+              />
+            </div>
+            <div className="flex items-center gap-1 shrink-0 w-20
+              justify-end">
+              <p className="text-[9px] font-bold text-[#1A6B4A]
+                font-['Space_Mono']">
+                {aiDone}/{aiTopics.length} topics
+              </p>
+            </div>
+          </div>
+
+          {/* Explorer */}
+          <div className="flex items-center gap-3">
+            <div className="w-16 shrink-0">
+              <p className="text-[9px] font-bold text-[#9A9590]
+                font-['Space_Mono'] uppercase tracking-wider">
+                Explorer
+              </p>
+            </div>
+            <div className="flex-1 h-2 bg-[#F5F4F0] rounded-full 
+              overflow-hidden">
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${Math.min(100, (archiveCount / 56) * 100)}%` }}
+                className="h-full rounded-full bg-[#7C3AED]"
+                transition={{ duration: 0.8, delay: 0.3 }}
+              />
+            </div>
+            <div className="flex items-center gap-1 shrink-0 w-20
+              justify-end">
+              <p className="text-[9px] font-bold text-[#7C3AED]
+                font-['Space_Mono']">
+                {archiveCount}/56 weeks
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Current focus statement */}
+        <div className="mt-4 pt-4 border-t border-[#F5F4F0]">
+          <p className="text-[9px] text-[#9A9590] 
+            font-['Space_Mono'] uppercase tracking-widest mb-1">
+            Current Focus
+          </p>
+          <p className="text-xs font-bold text-[#1A1A2E] font-['Inter']">
+            {dsaPercent < 60 
+              ? `DSA first — ${Math.max(0, 284 - dsaSolved)} problems to go before AI Track unlocks fully`
+              : dsaPercent < 100
+                ? `SDE + AI Track parallel — DSA ${dsaPercent}% done`
+                : 'All tracks active — ship projects + study deep'
+            }
+          </p>
+        </div>
+      </div>
 
       {/* Weekly Digest Card */}
       <div className="bg-white rounded-2xl border border-[#E5E0D8] p-5 mb-6">

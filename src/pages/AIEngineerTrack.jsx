@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react'
 import { useAiTrackStore, AI_TRACK_DATA } from '../store/aiTrackStore'
+import ProgressTimeline from '../components/ProgressTimeline'
 import { motion, AnimatePresence } from 'framer-motion'
 import { format, differenceInDays, addDays } from 'date-fns'
 import { clsx } from 'clsx'
@@ -322,6 +323,31 @@ const AIEngineerTrack = () => {
             />
           </div>
         </div>
+      </div>
+
+      {/* ── PROGRESS TIMELINE ── */}
+      <div className="mb-6">
+        <ProgressTimeline
+          phases={AI_TRACK_DATA.phases.map(p => ({
+            id: `phase-${p.number}`,
+            name: p.name,
+            color: p.color
+          }))}
+          currentPhaseId={`phase-${currentPhase.number}`}
+          getProgress={(phaseId) => {
+            const phaseNum = parseInt(phaseId.split('-')[1])
+            if (phaseNum === currentPhase.number) {
+              return Math.floor((phase2Done / totalTopics) * 100)
+            }
+            if (phaseNum < currentPhase.number) return 100
+            return 0
+          }}
+          isLocked={(phase) => {
+            const phaseNum = parseInt(phase.id.split('-')[1])
+            return phaseNum > currentPhase.number
+          }}
+          onPhaseClick={() => {}}
+        />
       </div>
 
       {/* ── TAB BAR ── */}

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { useExplorerStore } from '../store/explorerStore'
+import { useExplorerStore, EXPLORER_DOMAINS, getNextTopicSuggestion } from '../store/explorerStore'
 import { motion, AnimatePresence } from 'framer-motion'
 import { format } from 'date-fns'
 import { clsx } from 'clsx'
@@ -66,51 +66,52 @@ const Explorer = () => {
   }
 
   const renderCurrentTab = () => {
-    if (!weeklyTopic && !isGenerating) {
-      return (
-        <div className="flex flex-col items-center justify-center py-24 gap-6">
-          <div className="w-20 h-20 bg-white rounded-3xl border border-[#E5E0D8] flex items-center justify-center shadow-sm">
-            <Brain size={36} className="text-[#E07B39]" />
+    const renderMainContent = () => {
+      if (!weeklyTopic && !isGenerating) {
+        return (
+          <div className="flex flex-col items-center justify-center py-24 gap-6">
+            <div className="w-20 h-20 bg-white rounded-3xl border border-[#E5E0D8] flex items-center justify-center shadow-sm">
+              <Brain size={36} className="text-[#E07B39]" />
+            </div>
+            <div className="text-center">
+              <p className="text-lg font-bold text-[#1A1A2E] font-['Inter'] mb-2">
+                Your mind is hungry. Feed it.
+              </p>
+              <p className="text-sm text-[#9A9590] font-['Inter'] max-w-sm">
+                Generate your first weekly topic — a deep dive into Psychology, 
+                Neuroscience, Cognitive Science, Geopolitics, or AI.
+              </p>
+            </div>
+            <button
+              onClick={generateWeeklyTopic}
+              className="bg-[#E07B39] text-white px-8 py-3 rounded-xl font-bold font-['Space_Mono'] uppercase tracking-wider hover:opacity-90 transition-all text-sm"
+            >
+              Start Exploring
+            </button>
           </div>
-          <div className="text-center">
-            <p className="text-lg font-bold text-[#1A1A2E] font-['Inter'] mb-2">
-              Your mind is hungry. Feed it.
-            </p>
-            <p className="text-sm text-[#9A9590] font-['Inter'] max-w-sm">
-              Generate your first weekly topic — a deep dive into Psychology, 
-              Neuroscience, Cognitive Science, Geopolitics, or AI.
-            </p>
-          </div>
-          <button
-            onClick={generateWeeklyTopic}
-            className="bg-[#E07B39] text-white px-8 py-3 rounded-xl font-bold font-['Space_Mono'] uppercase tracking-wider hover:opacity-90 transition-all text-sm"
-          >
-            Start Exploring
-          </button>
-        </div>
-      )
-    }
+        )
+      }
 
-    if (isGenerating) {
-      return (
-        <div className="flex flex-col items-center justify-center py-24 gap-4">
-          <div className="w-12 h-12 bg-[#1A1A2E] rounded-2xl flex items-center justify-center animate-pulse">
-            <Brain size={24} className="text-[#E07B39]" />
+      if (isGenerating) {
+        return (
+          <div className="flex flex-col items-center justify-center py-24 gap-4">
+            <div className="w-12 h-12 bg-[#1A1A2E] rounded-2xl flex items-center justify-center animate-pulse">
+              <Brain size={24} className="text-[#E07B39]" />
+            </div>
+            <p className="text-sm font-bold text-[#1A1A2E] font-['Space_Mono'] uppercase tracking-wider">
+              Curating your rabbit hole...
+            </p>
+            <p className="text-xs text-[#9A9590] font-['Inter']">
+              Igniting curiosity with Groq Llama 3.3...
+            </p>
           </div>
-          <p className="text-sm font-bold text-[#1A1A2E] font-['Space_Mono'] uppercase tracking-wider">
-            Curating your rabbit hole...
-          </p>
-          <p className="text-xs text-[#9A9590] font-['Inter']">
-            Igniting curiosity with Groq Llama 3.3...
-          </p>
-        </div>
-      )
-    }
+        )
+      }
 
-    return (
-      <div className="flex flex-col lg:flex-row gap-6">
-        {/* LEFT COLUMN */}
-        <div className="flex-1 flex flex-col gap-5">
+      return (
+        <div className="flex flex-col lg:flex-row gap-6">
+          {/* LEFT COLUMN */}
+          <div className="flex-1 flex flex-col gap-5">
           {/* DOMAIN BADGE + BIG QUESTION CARD */}
           <div className="bg-[#1A1A2E] rounded-2xl p-6 text-white">
             <div className="flex items-center gap-2 mb-4">
@@ -510,6 +511,92 @@ const Explorer = () => {
     )
   }
 
+    return (
+      <div className="flex flex-col">
+        {/* Vision banner */}
+        <div className="bg-[#1A1A2E] rounded-2xl p-5 mb-5 text-white">
+          <p className="text-[9px] font-bold text-white/40
+            font-['Space_Mono'] uppercase tracking-widest mb-2">
+            The Explorer Mission
+          </p>
+          <p className="text-base font-bold text-white font-['Inter'] mb-3">
+            Build deep knowledge across Psychology, Neuroscience, 
+            Cognitive Science, Geopolitics, and AI.
+          </p>
+          
+          {/* Domain depth bars */}
+          <div className="space-y-2">
+            {[
+              { domain: 'Psychology', color: '#7C3AED' },
+              { domain: 'Neuroscience', color: '#E07B39' },
+              { domain: 'Cognitive Science', color: '#1A6B4A' },
+              { domain: 'Geopolitics', color: '#C0392B' },
+              { domain: 'AI', color: '#1A1A2E' }
+            ].map(domain => {
+              const depthData = knowledgeDepth?.find(
+                d => d.domain.toLowerCase() === domain.domain.toLowerCase()
+              )
+              const score = depthData?.depth_score || 0
+              const topicsRead = depthData?.topics_explored || 0
+              
+              return (
+                <div key={domain.domain}>
+                  <div className="flex justify-between mb-1">
+                    <p className="text-[9px] text-white/60
+                      font-['Space_Mono'] uppercase tracking-wider">
+                      {domain.domain}
+                    </p>
+                    <p className="text-[9px] text-white/40
+                      font-['Space_Mono']">
+                      {topicsRead} topics
+                    </p>
+                  </div>
+                  <div className="h-1 bg-white/10 rounded-full 
+                    overflow-hidden">
+                    <motion.div
+                      initial={{ width: 0 }}
+                      animate={{ width: `${Math.min(100, score)}%` }}
+                      transition={{ duration: 0.8, delay: 0.1 }}
+                      className="h-full rounded-full"
+                      style={{ backgroundColor: domain.color }}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Concept streak */}
+          <div className="mt-4 pt-4 border-t border-white/10 
+            flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <p className="text-[9px] text-white/40
+                font-['Space_Mono'] uppercase tracking-widest">
+                Reading Streak
+              </p>
+              <p className="text-sm font-bold text-[#E07B39]
+                font-['Space_Mono']">
+                {conceptStreak || 0} days
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <p className="text-[9px] text-white/40
+                font-['Space_Mono'] uppercase tracking-widest">
+                Weeks Explored
+              </p>
+              <p className="text-sm font-bold text-white
+                font-['Space_Mono']">
+                {topicArchive?.length || 0}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {renderMainContent()}
+      </div>
+    )
+  }
+
   const renderArchiveTab = () => (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -789,6 +876,7 @@ const Explorer = () => {
         {[
           { id: 'current', label: 'Current', icon: Brain },
           { id: 'archive', label: 'Archive', icon: Archive },
+          { id: 'path', label: 'Learning Path', icon: BookOpen },
           { id: 'depth', label: 'Knowledge Depth', icon: BarChart3 }
         ].map(tab => {
           const Icon = tab.icon
@@ -813,6 +901,173 @@ const Explorer = () => {
       {/* TAB CONTENT */}
       {activeTab === 'current' && renderCurrentTab()}
       {activeTab === 'archive' && renderArchiveTab()}
+      {activeTab === 'path' && (
+        <div className="space-y-5">
+          
+          {/* What you are building toward */}
+          <div className="bg-[#1A1A2E] rounded-2xl p-5 text-white">
+            <p className="text-[9px] font-bold text-white/40
+              font-['Space_Mono'] uppercase tracking-widest mb-2">
+              The Vision
+            </p>
+            <p className="text-base font-bold text-white 
+              font-['Inter'] mb-2">
+              Become a genuinely curious, well-read engineer
+            </p>
+            <p className="text-xs text-white/60 font-['Inter']
+              leading-relaxed">
+              56 weeks of deliberate exploration. Each week builds
+              on the last. Psychology feeds AI research. Neuroscience
+              feeds productivity. Geopolitics feeds market intuition.
+              This is not random reading — it is a structured 
+              curiosity curriculum.
+            </p>
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              {[
+                { label: 'Weeks done', value: topicArchive?.length || 0 },
+                { label: 'Weeks left', value: 56 - (topicArchive?.length || 0) },
+                { label: 'Depth score', 
+                  value: knowledgeDepth?.reduce(
+                    (s, d) => s + (d.depth_score || 0), 0
+                  ) || 0
+                }
+              ].map(stat => (
+                <div key={stat.label} 
+                  className="bg-white/5 rounded-xl p-3 text-center">
+                  <p className="text-xl font-bold text-white
+                    font-['Space_Mono']">{stat.value}</p>
+                  <p className="text-[9px] text-white/40
+                    font-['Space_Mono'] uppercase tracking-wider">
+                    {stat.label}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Per-domain learning paths */}
+          {Object.entries(EXPLORER_DOMAINS).map(([domain, levels]) => {
+            const depthData = knowledgeDepth?.find(
+              d => d.domain.toLowerCase() === domain.toLowerCase()
+            )
+            const studiedCount = depthData?.topics_explored || 0
+            const allTopics = Object.values(levels).flat()
+            const nextTopic = getNextTopicSuggestion(
+              domain, topicArchive, knowledgeDepth
+            )
+            
+            const DOMAIN_COLORS = {
+              'Psychology': '#7C3AED',
+              'Neuroscience': '#E07B39',
+              'Cognitive Science': '#1A6B4A',
+              'Geopolitics': '#C0392B',
+              'AI': '#1A1A2E',
+              'AI × Fields': '#0F4C81'    // add this line only
+            }
+            const color = DOMAIN_COLORS[domain] || '#9A9590'
+
+            return (
+              <div key={domain} 
+                className="bg-white rounded-2xl border border-[#E5E0D8] p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-2 h-2 rounded-full"
+                        style={{ backgroundColor: color }}/>
+                      <p className="text-xs font-bold text-[#1A1A2E]
+                        font-['Inter']">
+                        {domain}
+                      </p>
+                    </div>
+                    <p className="text-[9px] text-[#9A9590]
+                      font-['Space_Mono'] uppercase tracking-wider">
+                      {studiedCount}/{allTopics.length} topics
+                    </p>
+                  </div>
+                  <div className="w-24 h-1.5 bg-[#F5F4F0] 
+                    rounded-full overflow-hidden">
+                    <div className="h-full rounded-full"
+                      style={{ 
+                        width: `${(studiedCount / allTopics.length) * 100}%`,
+                        backgroundColor: color 
+                      }}/>
+                  </div>
+                </div>
+
+                {/* Level sections */}
+                {Object.entries(levels).map(([level, topics]) => (
+                  <div key={level} className="mb-3 last:mb-0">
+                    <p className="text-[8px] font-bold 
+                      font-['Space_Mono'] uppercase tracking-widest
+                      mb-1.5"
+                      style={{ color }}>
+                      {level}
+                    </p>
+                    <div className="space-y-1">
+                      {topics.map((topic, ti) => {
+                        const studied = (topicArchive || []).some(
+                          t => t.topic_data?.title?.toLowerCase()
+                            .includes(topic.toLowerCase().slice(0, 20))
+                        )
+                        const isNext = nextTopic?.title === topic
+                        
+                        return (
+                          <div key={ti} 
+                            className={clsx(
+                              'flex items-center gap-2 p-2 rounded-lg',
+                              'transition-all',
+                              studied 
+                                ? 'bg-[#F0FDF4]'
+                                : isNext
+                                  ? 'border border-dashed'
+                                  : 'bg-[#F5F4F0]'
+                            )}
+                            style={isNext 
+                              ? { borderColor: color + '50' } 
+                              : {}}
+                          >
+                            <div className={clsx(
+                              'w-4 h-4 rounded border flex items-center',
+                              'justify-center shrink-0 transition-all'
+                            )}
+                              style={{
+                                backgroundColor: studied 
+                                  ? color : 'transparent',
+                                borderColor: studied 
+                                  ? color : '#E5E0D8'
+                              }}
+                            >
+                              {studied && (
+                                <Check size={9} className="text-white" 
+                                  strokeWidth={3}/>
+                              )}
+                            </div>
+                            <p className={clsx(
+                              'text-[10px] font-["Inter"] flex-1',
+                              studied 
+                                ? 'text-[#9A9590]' 
+                                : 'text-[#1A1A2E]'
+                            )}>
+                              {topic}
+                            </p>
+                            {isNext && (
+                              <span className="text-[8px] font-bold
+                                font-['Space_Mono'] uppercase shrink-0"
+                                style={{ color }}>
+                                Next
+                              </span>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )
+          })}
+        </div>
+      )}
       {activeTab === 'depth' && renderDepthTab()}
 
       {/* QUIZ MODAL */}

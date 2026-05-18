@@ -23,6 +23,7 @@ const Settings = React.lazy(() => import('./pages/Settings'));
 const Explorer = React.lazy(() => import('./pages/Explorer'));
 const AIEngineerTrack = React.lazy(() => import('./pages/AIEngineerTrack'));
 const WeeklyReview = React.lazy(() => import('./pages/WeeklyReview'));
+const Goals = React.lazy(() => import('./pages/Goals'));
 
 import { useSettingsStore } from './store/settingsStore';
 import { useXpStore } from './store/xpStore';
@@ -201,6 +202,7 @@ function App() {
                   <Route path="/explorer" element={<ErrorBoundary><Explorer /></ErrorBoundary>} />
                   <Route path="/ai-track" element={<ErrorBoundary><AIEngineerTrack /></ErrorBoundary>} />
                   <Route path="/weekly" element={<ErrorBoundary><WeeklyReview /></ErrorBoundary>} />
+                  <Route path="/goals" element={<ErrorBoundary pageName="Goals"><Goals /></ErrorBoundary>} />
                 </Routes>
               </motion.div>
             </AnimatePresence>
