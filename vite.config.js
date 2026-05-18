@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
         '/api/groq': {
           target: 'https://api.groq.com',
           changeOrigin: true,
-          rewrite: (path) => path.replace(/^\/api\/groq/, ''),
+          rewrite: () => '/openai/v1/chat/completions',
           headers: {
             'Authorization': `Bearer ${env.VITE_GROQ_API_KEY}`
           }

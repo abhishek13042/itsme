@@ -18,7 +18,7 @@ export async function callGroq({
     ]
   }
   try {
-    const res = await fetch('/api/groq/openai/v1/chat/completions', {
+    const res = await fetch('/api/groq', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

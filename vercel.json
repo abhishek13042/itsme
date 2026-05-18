@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/api/groq",
+      "destination": "/api/groq"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
+}
