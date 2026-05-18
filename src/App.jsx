@@ -163,7 +163,7 @@ function App() {
       <LevelUpEvent />
       <ClusterCelebration />
       <Sidebar />
-      <main className="lg:ml-[260px] ml-0 flex-1 min-h-screen p-4 lg:p-8 bg-[var(--bg-primary)]">
+      <main className="lg:ml-[260px] ml-0 flex-1 min-h-screen p-4 lg:p-8 pb-20 lg:pb-8 bg-[var(--bg-primary)]">
         <div className="max-w-7xl mx-auto h-full">
           <Suspense fallback={
             <div className="flex-1 flex items-center justify-center min-h-screen bg-[#F5F4F0]">
